@@ -12,6 +12,8 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use crate::models::systemd::is_safe_unit_name;
+
 pub const API_TOKEN_ENV: &str = "ARK_MANAGER_API_TOKEN";
 
 #[derive(Debug, Clone, Deserialize)]
@@ -21,6 +23,8 @@ pub struct Config {
     pub resource_policy: ResourcePolicy,
     pub backup_policy: BackupPolicy,
     pub discord: DiscordConfig,
+    #[serde(default)]
+    pub slots: Option<SlotsConfig>,
     #[serde(default)]
     pub travel_slots: Vec<TravelSlot>,
     #[serde(default)]
@@ -80,6 +84,36 @@ pub struct DiscordConfig {
 pub struct TravelSlot {
     pub name: String,
     pub role: String, // "home" | "travel"
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SlotsConfig {
+    pub home: ServerSlot,
+    #[serde(default)]
+    pub travel_a: Option<ServerSlot>,
+    #[serde(default)]
+    pub travel_b: Option<ServerSlot>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServerSlot {
+    pub id: String,
+    pub label: String,
+    pub map_key: String,
+    pub systemd_unit: String,
+    pub game_port: u16,
+    pub query_port: u16,
+    pub rcon_port: u16,
+    #[serde(default)]
+    pub save_path: Option<String>,
+    #[serde(default)]
+    pub config_path: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub protected: bool,
+    #[serde(default)]
+    pub home_resource_standby_enabled: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -193,7 +227,11 @@ impl Config {
             .iter()
             .filter(|s| s.role.eq_ignore_ascii_case("travel"))
             .count();
+        let mut travel_slot_names = HashSet::new();
         for s in &self.travel_slots {
+            if !travel_slot_names.insert(s.name.to_ascii_lowercase()) {
+                return Err(inv(format!("duplicate travel slot name '{}'", s.name)));
+            }
             if !s.role.eq_ignore_ascii_case("home") && !s.role.eq_ignore_ascii_case("travel") {
                 return Err(inv(format!(
                     "travel slot '{}' has invalid role '{}' (expected 'home' or 'travel')",
@@ -218,14 +256,28 @@ impl Config {
             return Err(inv("at least one map must be configured".into()));
         }
 
-        // --- duplicate map keys / ports ---
+        if let Some(slots) = &self.slots {
+            self.validate_server_slots(slots)?;
+        }
+
+        // --- duplicate map keys / units / ports ---
         let mut ids = HashSet::new();
+        let mut units = HashSet::new();
         let mut ports = HashSet::new();
         let mut home_capable = false;
         let mut home_assigned = 0u32;
         for m in &self.maps {
             if !ids.insert(m.id.as_str()) {
                 return Err(inv(format!("duplicate map id '{}'", m.id)));
+            }
+            if !is_safe_unit_name(&m.systemd_unit) {
+                return Err(inv(format!(
+                    "map '{}' has unsafe systemd unit name '{}'",
+                    m.id, m.systemd_unit
+                )));
+            }
+            if !units.insert(m.systemd_unit.as_str()) {
+                return Err(inv(format!("duplicate systemd unit '{}'", m.systemd_unit)));
             }
             for (label, port) in [
                 ("query_port", m.query_port),
@@ -266,6 +318,80 @@ impl Config {
         Ok(())
     }
 
+    fn validate_server_slots(&self, slots: &SlotsConfig) -> Result<(), ConfigError> {
+        let inv = |m: String| ConfigError::Invalid(m);
+        let mut ids = HashSet::new();
+        let mut units = HashSet::new();
+        let mut ports = HashSet::new();
+        let all_slots = slots.iter();
+        let travel_count = all_slots
+            .iter()
+            .filter(|(_, key, _)| *key != "home")
+            .count();
+
+        if travel_count > 2 {
+            return Err(inv(format!(
+                "slots config has {travel_count} travel slots; max travel slots is 2 for T1.1"
+            )));
+        }
+
+        for (slot, key, is_home) in all_slots {
+            if slot.id.trim().is_empty() {
+                return Err(inv(format!("slots.{key}.id must not be empty")));
+            }
+            if slot.label.trim().is_empty() {
+                return Err(inv(format!("slots.{key}.label must not be empty")));
+            }
+            if slot.map_key.trim().is_empty() {
+                return Err(inv(format!("slots.{key}.map_key must not be empty")));
+            }
+            if !ids.insert(slot.id.as_str()) {
+                return Err(inv(format!("duplicate slot id '{}'", slot.id)));
+            }
+            if !is_safe_unit_name(&slot.systemd_unit) {
+                return Err(inv(format!(
+                    "slots.{key}.systemd_unit '{}' is not a safe unit name",
+                    slot.systemd_unit
+                )));
+            }
+            if !units.insert(slot.systemd_unit.as_str()) {
+                return Err(inv(format!(
+                    "duplicate slot systemd unit '{}'",
+                    slot.systemd_unit
+                )));
+            }
+            for (label, port) in [
+                ("game_port", slot.game_port),
+                ("query_port", slot.query_port),
+                ("rcon_port", slot.rcon_port),
+            ] {
+                if !ports.insert(port) {
+                    return Err(inv(format!(
+                        "duplicate slot port {port} ({label}) on slot '{}'",
+                        slot.id
+                    )));
+                }
+            }
+            if is_home && !slot.protected {
+                return Err(inv("slots.home.protected must be true".into()));
+            }
+            for (label, maybe_path) in [
+                ("save_path", slot.save_path.as_deref()),
+                ("config_path", slot.config_path.as_deref()),
+            ] {
+                if let Some(path) = maybe_path {
+                    validate_safe_path(&format!("slots.{key}.{label}"), path)?;
+                    validate_path_under_root(
+                        &format!("slots.{key}.{label}"),
+                        path,
+                        &self.cluster.directory,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn socket_addr(&self) -> std::net::SocketAddr {
         let ip: IpAddr = self
             .server
@@ -285,6 +411,19 @@ impl Config {
             Ok(IpAddr::V6(v6)) => v6.is_loopback() || v6.is_unique_local(),
             Err(_) => false,
         }
+    }
+}
+
+impl SlotsConfig {
+    pub fn iter(&self) -> Vec<(&ServerSlot, &'static str, bool)> {
+        let mut slots = vec![(&self.home, "home", true)];
+        if let Some(slot) = &self.travel_a {
+            slots.push((slot, "travel_a", false));
+        }
+        if let Some(slot) = &self.travel_b {
+            slots.push((slot, "travel_b", false));
+        }
+        slots
     }
 }
 
@@ -309,6 +448,18 @@ fn validate_safe_path(label: &str, path: &str) -> Result<(), ConfigError> {
         )));
     }
     Ok(())
+}
+
+fn validate_path_under_root(label: &str, path: &str, root: &str) -> Result<(), ConfigError> {
+    let p = path.trim_end_matches('/');
+    let r = root.trim_end_matches('/');
+    if p == r || p.starts_with(&format!("{r}/")) {
+        Ok(())
+    } else {
+        Err(ConfigError::Invalid(format!(
+            "{label} '{path}' must stay under cluster.directory '{root}'"
+        )))
+    }
 }
 
 #[cfg(test)]
@@ -353,6 +504,50 @@ mod tests {
                 status_channel: "#c".into(),
                 bot_token_env: "X".into(),
             },
+            slots: Some(SlotsConfig {
+                home: ServerSlot {
+                    id: "home".into(),
+                    label: "Home".into(),
+                    map_key: "home".into(),
+                    systemd_unit: "ark-server@home.service".into(),
+                    game_port: 7777,
+                    query_port: 27015,
+                    rcon_port: 27020,
+                    save_path: Some("/srv/ark/home/Saved".into()),
+                    config_path: Some("/srv/ark/home/Saved/Config/LinuxServer".into()),
+                    enabled: true,
+                    protected: true,
+                    home_resource_standby_enabled: true,
+                },
+                travel_a: Some(ServerSlot {
+                    id: "travel-a".into(),
+                    label: "Travel A".into(),
+                    map_key: "rag".into(),
+                    systemd_unit: "ark-server@travel-a.service".into(),
+                    game_port: 7779,
+                    query_port: 27017,
+                    rcon_port: 27022,
+                    save_path: None,
+                    config_path: None,
+                    enabled: true,
+                    protected: false,
+                    home_resource_standby_enabled: false,
+                }),
+                travel_b: Some(ServerSlot {
+                    id: "travel-b".into(),
+                    label: "Travel B".into(),
+                    map_key: "ab".into(),
+                    systemd_unit: "ark-server@travel-b.service".into(),
+                    game_port: 7781,
+                    query_port: 27019,
+                    rcon_port: 27024,
+                    save_path: None,
+                    config_path: None,
+                    enabled: true,
+                    protected: false,
+                    home_resource_standby_enabled: false,
+                }),
+            }),
             travel_slots: vec![
                 TravelSlot {
                     name: "Home".into(),
@@ -420,6 +615,27 @@ mod tests {
     fn duplicate_port_rejected() {
         let mut c = base();
         c.maps[1].query_port = 27015;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn duplicate_systemd_unit_rejected() {
+        let mut c = base();
+        c.maps[1].systemd_unit = c.maps[0].systemd_unit.clone();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn unsafe_systemd_unit_rejected() {
+        let mut c = base();
+        c.maps[0].systemd_unit = "ark@home.service;shutdown".into();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn slot_paths_must_stay_under_cluster_dir() {
+        let mut c = base();
+        c.slots.as_mut().unwrap().home.save_path = Some("/etc/ark".into());
         assert!(c.validate().is_err());
     }
 

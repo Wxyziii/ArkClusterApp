@@ -22,14 +22,22 @@ export const cluster = {
 
 // ---- Resource snapshot (high pressure scenario for demo) ----
 export const resources: ResourceSample = {
+  source: 'mock',
   ramUsedGb: 26.8,
   ramTotalGb: 32,
+  ramAvailableGb: 5.2,
   cpuPct: 71,
   swapUsedGb: 1.9,
   swapTotalGb: 8,
   diskUsedGb: 412,
   diskTotalGb: 930,
-  arkProcMemGb: 23.1
+  diskFreeGb: 518,
+  arkProcMemGb: 23.1,
+  load1: 3.4,
+  load5: 2.8,
+  load15: 2.2,
+  managerUptimeSecs: 0,
+  systemUptimeSecs: null
 };
 
 export const thresholds = {

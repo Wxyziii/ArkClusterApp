@@ -67,6 +67,47 @@ role = "travel"
 name = "Travel B"
 role = "travel"
 
+# Read-only server slots. These are the real systemd-backed server positions
+# the manager observes in T1.1. Unit names are validated and only read with
+# `systemctl show`; no start/stop/restart commands are implemented.
+[slots.home]
+id = "home"
+label = "Home"
+map_key = "home-island"
+systemd_unit = "ark-server@home.service"
+game_port = 7777
+query_port = 27015
+rcon_port = 27020
+save_path = "/srv/ark/cluster/home/Saved"
+config_path = "/srv/ark/cluster/home/Saved/Config/LinuxServer"
+enabled = true
+protected = true
+home_resource_standby_enabled = true
+
+[slots.travel_a]
+id = "travel-a"
+label = "Travel A"
+map_key = "travel-rag"
+systemd_unit = "ark-server@travel-a.service"
+game_port = 7781
+query_port = 27016
+rcon_port = 27021
+enabled = true
+protected = false
+home_resource_standby_enabled = false
+
+[slots.travel_b]
+id = "travel-b"
+label = "Travel B"
+map_key = "travel-ab"
+systemd_unit = "ark-server@travel-b.service"
+game_port = 7785
+query_port = 27017
+rcon_port = 27022
+enabled = true
+protected = false
+home_resource_standby_enabled = false
+
 # Configured maps. Keys (id) must be unique. Each query/rcon/game port must be
 # unique across all maps. Exactly one map should be can_be_home + assigned Home,
 # but at minimum one map must declare can_be_home = true.

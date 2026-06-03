@@ -8,7 +8,6 @@
   let { map, onaction }: { map: ArkMap; onaction?: (action: string, map: ArkMap) => void } = $props();
 
   // action availability rules
-  let hasPlayers = $derived(map.players > 0);
   let isOffline = $derived(map.state === 'Offline' || map.state === 'Resource Standby');
   let ramPct = $derived(map.ramEstimateMb ? Math.round((map.ramMb / map.ramEstimateMb) * 100) : 0);
 </script>
@@ -37,6 +36,7 @@
   {/if}
 
   <div class="mt-3 flex flex-wrap gap-1.5">
+    <StatusBadge label="Read-only status" tone="cyan" size="sm" />
     <StatusBadge label="RCON {map.rcon}" tone={rconTone[map.rcon]} size="sm" />
     {#if map.restartRequired}<StatusBadge label="Restart req." tone="amber" size="sm" />{/if}
     {#if map.protected}<StatusBadge label="Protected" tone="accent" size="sm" />{/if}
@@ -49,22 +49,21 @@
   <div class="mt-3 flex flex-wrap gap-1.5 border-t border-[#2a2a2a] pt-3">
     <Button size="sm" variant="ghost" href="/maps/{map.id}">Details</Button>
     {#if isOffline}
-      <Button size="sm" variant="primary" onclick={() => onaction?.('start', map)}>Start</Button>
+      <Button size="sm" variant="primary" disabled title="Control disabled in this phase">Start</Button>
     {:else}
       <Button
         size="sm"
         variant="warn"
-        disabled={hasPlayers && map.config.canAutoStopWhenEmpty}
-        title={hasPlayers ? 'Map has active players — cannot auto-stop' : 'Restart map'}
-        onclick={() => onaction?.('restart', map)}
+        disabled
+        title="Control disabled in this phase"
       >Restart</Button>
       <Button
         size="sm"
         variant="danger"
-        title={map.isHome ? 'Home stop requires strong confirmation (Resource Standby)' : hasPlayers ? 'Players online — confirm required' : 'Stop map'}
-        onclick={() => onaction?.('stop', map)}
+        disabled
+        title="Control disabled in this phase"
       >Stop</Button>
     {/if}
-    <Button size="sm" variant="ghost" onclick={() => onaction?.('backup', map)}>Backup</Button>
+    <Button size="sm" variant="ghost" disabled title="Backup action disabled in this phase">Backup</Button>
   </div>
 </div>

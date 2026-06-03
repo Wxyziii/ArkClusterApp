@@ -5,4 +5,5 @@ pub mod audit;
 pub mod domain;
 pub mod governor;
 pub mod rcon;
+pub mod resources;
 pub mod systemd;

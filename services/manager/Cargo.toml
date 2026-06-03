@@ -10,7 +10,7 @@ name = "ark-manager"
 path = "src/main.rs"
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time", "process"] }
 axum = "0.8"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors", "set-header"] }
@@ -22,6 +22,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 anyhow = "1"
+async-trait = "0.1"
+libc = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }

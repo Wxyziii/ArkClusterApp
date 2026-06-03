@@ -67,7 +67,7 @@
 
   let clusterStatus = $derived([
     { label: 'Rust Manager', value: status?.manager.status ?? 'Online', tone: (status?.manager.tone ?? 'green') as Tone },
-    { label: 'systemd Control', value: status?.systemd.status ?? 'Available', tone: (status?.systemd.tone ?? 'green') as Tone },
+    { label: 'systemd Read-only', value: status?.systemd.status ?? 'Available', tone: (status?.systemd.tone ?? 'green') as Tone },
     { label: 'Tailscale', value: status?.tailscale.status ?? 'Connected', tone: (status?.tailscale.tone ?? 'cyan') as Tone },
     { label: 'Discord Bot', value: status?.discord.status ?? 'Online', tone: (status?.discord.tone ?? 'green') as Tone }
   ]);
@@ -80,7 +80,12 @@
   {/snippet}
 </PageHeader>
 
-{#if fromFallback}<BackendStatusBanner error={loadError} />{/if}
+<BackendStatusBanner
+  error={loadError}
+  connected={!fromFallback && !!status}
+  dataSource={status?.resourcePressure.source ?? resources.source}
+  systemdStatus={status?.systemd.status ?? null}
+/>
 
 <!-- top status strip -->
 <div class="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
@@ -91,6 +96,7 @@
       {pl.label}
     </p>
     <p class="mt-1 text-[11px] text-[#8c8c8c]">{totalPlayers} players · {runningMaps} maps online</p>
+    <p class="mt-0.5 text-[10px] text-[#8c8c8c]">source: {status?.resourcePressure.source ?? resources.source}</p>
   </div>
   {#each clusterStatus as s (s.label)}
     <div class="card-elevated flex flex-col justify-center p-4">
@@ -109,7 +115,10 @@
     <ResourceCard label="Swap" icon="🔁" pct={swapPct} detail="{resources.swapUsedGb} / {resources.swapTotalGb} GB" warn={30} danger={60} />
     <ResourceCard label="Disk" icon="🗄️" pct={diskPct} detail="{resources.diskUsedGb} / {resources.diskTotalGb} GB" warn={80} danger={92} />
   </div>
-  <p class="mt-3 text-xs text-[#8c8c8c]">ARK process memory total: <span class="font-bold text-[#ededed]">{resources.arkProcMemGb} GB</span> across running maps.</p>
+  <p class="mt-3 text-xs text-[#8c8c8c]">
+    ARK process memory total: <span class="font-bold text-[#ededed]">{resources.arkProcMemGb} GB</span>
+    across running maps. Load: {resources.load1} / {resources.load5} / {resources.load15}.
+  </p>
 </Card>
 
 <!-- running maps -->

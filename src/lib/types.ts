@@ -12,12 +12,36 @@ export type MapState =
   | 'Backing Up'
   | 'Stopping'
   | 'Resource Standby'
-  | 'Error';
+  | 'Error'
+  | 'Unknown';
 
 export type RoleCapability = 'Home-capable' | 'Travel-capable' | 'Disabled';
 export type SlotAssignment = 'Home' | 'Travel A' | 'Travel B' | 'Unassigned';
 export type RconStatus = 'Connected' | 'Connecting' | 'Disconnected';
-export type SystemdStatus = 'active (running)' | 'activating' | 'inactive (dead)' | 'failed';
+export type SystemdStatus =
+  | 'active (running)'
+  | 'activating'
+  | 'inactive (dead)'
+  | 'failed'
+  | 'unknown'
+  | 'systemd unavailable';
+
+export interface SystemdDetail {
+  unit: string;
+  source: string;
+  exists: boolean;
+  loaded: boolean;
+  state: SystemdStatus;
+  active: boolean;
+  activeState: string;
+  subState: string;
+  description?: string;
+  since?: string;
+  mainPid?: number;
+  memoryCurrentBytes?: number;
+  tasksCurrent?: number;
+  error?: string;
+}
 
 export interface Player {
   name: string;
@@ -64,6 +88,7 @@ export interface ArkMap {
   protected: boolean;
   nextAction: string;
   config: MapConfigSummary;
+  systemdDetail?: SystemdDetail;
 }
 
 export interface TravelRequest {
@@ -80,14 +105,22 @@ export interface TravelRequest {
 }
 
 export interface ResourceSample {
+  source: 'host' | 'mock' | 'fallback' | string;
   ramUsedGb: number;
   ramTotalGb: number;
+  ramAvailableGb: number;
   cpuPct: number;
   swapUsedGb: number;
   swapTotalGb: number;
   diskUsedGb: number;
   diskTotalGb: number;
+  diskFreeGb: number;
   arkProcMemGb: number;
+  load1: number;
+  load5: number;
+  load15: number;
+  managerUptimeSecs: number;
+  systemUptimeSecs?: number | null;
 }
 
 export interface LogEvent {

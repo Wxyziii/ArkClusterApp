@@ -48,6 +48,12 @@
 
 {#if fromFallback}<BackendStatusBanner error={loadError} />{/if}
 
+<div class="mb-5">
+  <SafetyWarningPanel tone="warn" title="Read-only status">
+    Control disabled in this phase. The manager reads configured unit status only; Start, Stop, Restart, RCON, and backup actions are not implemented.
+  </SafetyWarningPanel>
+</div>
+
 {#if loading}
   <LoadingState label="Loading maps from manager…" rows={4} />
 {:else}

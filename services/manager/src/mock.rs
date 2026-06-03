@@ -9,14 +9,22 @@ use crate::models::domain::*;
 
 pub fn resources() -> ResourceSample {
     ResourceSample {
+        source: "mock".into(),
         ram_used_gb: 26.8,
         ram_total_gb: 32.0,
+        ram_available_gb: 5.2,
         cpu_pct: 71,
         swap_used_gb: 1.9,
         swap_total_gb: 8.0,
         disk_used_gb: 412.0,
         disk_total_gb: 930.0,
+        disk_free_gb: 518.0,
         ark_proc_mem_gb: 23.1,
+        load1: 3.4,
+        load5: 2.8,
+        load15: 2.2,
+        manager_uptime_secs: 0,
+        system_uptime_secs: None,
     }
 }
 
@@ -131,6 +139,7 @@ pub fn maps() -> Vec<ArkMap> {
                     "Super Structures",
                 ],
             ),
+            systemd_detail: None,
         },
         ArkMap {
             id: "travel-rag".into(),
@@ -171,6 +180,7 @@ pub fn maps() -> Vec<ArkMap> {
                     "Dino Storage v2",
                 ],
             ),
+            systemd_detail: None,
         },
         ArkMap {
             id: "travel-ab".into(),
@@ -211,6 +221,7 @@ pub fn maps() -> Vec<ArkMap> {
                     "Aberration Ascended Loot",
                 ],
             ),
+            systemd_detail: None,
         },
         ArkMap {
             id: "map-extinction".into(),
@@ -247,6 +258,7 @@ pub fn maps() -> Vec<ArkMap> {
                 false,
                 &["Awesome SpyGlass!", "Dino Storage v2"],
             ),
+            systemd_detail: None,
         },
         ArkMap {
             id: "map-scorched".into(),
@@ -283,6 +295,7 @@ pub fn maps() -> Vec<ArkMap> {
                 false,
                 &["Awesome SpyGlass!"],
             ),
+            systemd_detail: None,
         },
         ArkMap {
             id: "map-fjordur".into(),
@@ -323,6 +336,7 @@ pub fn maps() -> Vec<ArkMap> {
                     "Dino Storage v2",
                 ],
             ),
+            systemd_detail: None,
         },
     ]
 }

@@ -6,7 +6,7 @@
 //   VITE_ARK_API_TOKEN  Bearer token for /api/* (matches manager.toml)
 // See `.env.example`.
 
-import type { ArkMap, Backup, ConfigField, LogEvent, Mod, Player } from '$lib/types';
+import type { ArkMap, Backup, ConfigField, LogEvent, Mod, Player, ResourceSample } from '$lib/types';
 
 const BASE: string =
   (import.meta.env.VITE_ARK_API_BASE as string | undefined)?.replace(/\/$/, '') ??
@@ -90,23 +90,30 @@ export interface ClusterStatus {
   manager: { status: string; tone: string };
   tailscale: { status: string; tone: string; bindPrivate: boolean; bindAddress: string };
   discord: { status: string; tone: string };
-  systemd: { status: string; tone: string };
-  resourcePressure: { ramPct: number; label: string; tone: string };
+  systemd: {
+    status: string;
+    tone: string;
+    available?: boolean;
+    source?: string;
+    activeUnits?: number;
+    failedUnits?: number;
+    checkedUnits?: number;
+  };
+  resourcePressure: {
+    ramPct: number;
+    label: string;
+    tone: string;
+    source?: string;
+    load1?: number;
+    load5?: number;
+    load15?: number;
+  };
   players: number;
   runningMaps: number;
 }
 
 export interface ResourcesResponse {
-  sample: {
-    ramUsedGb: number;
-    ramTotalGb: number;
-    cpuPct: number;
-    swapUsedGb: number;
-    swapTotalGb: number;
-    diskUsedGb: number;
-    diskTotalGb: number;
-    arkProcMemGb: number;
-  };
+  sample: ResourceSample;
   derived: {
     ramPct: number;
     cpuPct: number;
@@ -115,7 +122,23 @@ export interface ResourcesResponse {
     pressure: { label: string; tone: string };
   };
   thresholds: Record<string, number>;
-  governor: { decision: string; why: string; examples: string[]; policy: Record<string, unknown> };
+  governor: {
+    decision: string;
+    why: string;
+    examples: string[];
+    policy: {
+      neverStopWithPlayers: boolean;
+      homeStandbyEnabled: boolean;
+      homeStopsOnlyWhenEmpty: boolean;
+      preferActivePlayerMaps: boolean;
+      autoRestartHome: boolean;
+      maxTravelServers?: number;
+      emptyShutdownMins?: number;
+    };
+  };
+  source: string;
+  uptime: { managerSecs: number; systemSecs?: number | null };
+  loadAverage: { one: number; five: number; fifteen: number };
   perProcess: { map: string; ramMb: number; cpuPct: number }[];
 }
 

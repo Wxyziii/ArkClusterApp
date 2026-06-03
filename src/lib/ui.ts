@@ -10,7 +10,8 @@ export const stateTone: Record<MapState, Tone> = {
   'Backing Up': 'amber',
   Stopping: 'amber',
   'Resource Standby': 'gray',
-  Error: 'red'
+  Error: 'red',
+  Unknown: 'gray'
 };
 
 export const rconTone: Record<RconStatus, Tone> = {

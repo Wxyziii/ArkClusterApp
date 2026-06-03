@@ -5,6 +5,8 @@
 
 use serde::Serialize;
 
+use crate::models::systemd::UnitStatus;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Player {
@@ -56,6 +58,8 @@ pub struct ArkMap {
     pub protected: bool,
     pub next_action: String,
     pub config: MapConfigSummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub systemd_detail: Option<UnitStatus>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -76,14 +80,22 @@ pub struct TravelRequest {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceSample {
+    pub source: String,
     pub ram_used_gb: f64,
     pub ram_total_gb: f64,
+    pub ram_available_gb: f64,
     pub cpu_pct: u32,
     pub swap_used_gb: f64,
     pub swap_total_gb: f64,
     pub disk_used_gb: f64,
     pub disk_total_gb: f64,
+    pub disk_free_gb: f64,
     pub ark_proc_mem_gb: f64,
+    pub load1: f64,
+    pub load5: f64,
+    pub load15: f64,
+    pub manager_uptime_secs: u64,
+    pub system_uptime_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -1,14 +1,36 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { onMount } from 'svelte';
   import {
     PageHeader, Card, StatusBadge, MapStateTimeline, PlayerList, Button,
-    RestartRequiredBanner, ResourceCard, ActivityLogItem, EmptyState, PolicyCard
+    RestartRequiredBanner, ResourceCard, ActivityLogItem, EmptyState, PolicyCard,
+    BackendStatusBanner, SafetyWarningPanel
   } from '$lib/components';
   import { maps, players, activityLog } from '$lib/data/mock';
+  import { api, loadWithFallback } from '$lib/api';
+  import type { ArkMap, Player } from '$lib/types';
   import { stateTone, rconTone, systemdTone, fmtDuration, fmtMb } from '$lib/ui';
 
-  let map = $derived(maps.find((m) => m.id === $page.params.id));
-  let mapPlayers = $derived(map ? players.filter((p) => p.map === map!.name) : []);
+  let map = $state<ArkMap | undefined>(maps.find((m) => m.id === $page.params.id));
+  let loadedPlayers = $state<Player[]>(players.filter((p) => p.map === map?.name));
+  let fromFallback = $state(false);
+  let loadError = $state<string | null>(null);
+
+  onMount(async () => {
+    const id = $page.params.id ?? '';
+    const fallbackMap = maps.find((m) => m.id === id);
+    if (!fallbackMap) return;
+    const res = await loadWithFallback(() => api.server(id), {
+      server: fallbackMap,
+      players: players.filter((p) => p.map === fallbackMap.name)
+    });
+    map = res.data.server;
+    loadedPlayers = res.data.players;
+    fromFallback = res.fromFallback;
+    loadError = res.error;
+  });
+
+  let mapPlayers = $derived(loadedPlayers);
   let mapLogs = $derived(map ? activityLog.filter((l) => l.targetMap === map!.name).slice(0, 6) : []);
 
   const allSteps = [
@@ -30,6 +52,12 @@
   <div class="mt-4"><Button href="/maps" variant="default">← Back to Maps</Button></div>
 {:else}
   <div class="mb-4"><a href="/maps" class="text-xs text-[#8c8c8c] hover:text-[#7c9a82]">← Maps</a></div>
+  {#if fromFallback}<BackendStatusBanner error={loadError} />{/if}
+  <div class="mb-5">
+    <SafetyWarningPanel tone="warn" title="Read-only status">
+      Control disabled in this phase. Unit state below is read from systemd when available; no ARK control or RCON commands are sent.
+    </SafetyWarningPanel>
+  </div>
 
   <!-- status header -->
   <div class="card mb-5 overflow-hidden">
@@ -42,7 +70,7 @@
         <p class="mt-1 font-mono text-xs text-[#8c8c8c]">{map.config.arkMapName} · {map.assignment} · {map.role}</p>
       </div>
       <div class="flex flex-wrap items-center gap-2">
-        <StatusBadge label={map.state} tone={stateTone[map.state]} dot pulse={map.state === 'Online'} />
+      <StatusBadge label={map.state} tone={stateTone[map.state]} dot pulse={map.state === 'Online'} />
         <StatusBadge label="RCON {map.rcon}" tone={rconTone[map.rcon]} dot />
         <StatusBadge label={map.systemd} tone={systemdTone(map.systemd)} />
         {#if map.restartRequired}<StatusBadge label="Restart required" tone="amber" />{/if}
@@ -100,10 +128,22 @@
           <div class="flex justify-between"><dt class="text-[#8c8c8c]">Reason</dt><dd>{map.isHome ? 'resource standby' : 'scheduled'}</dd></div>
         </dl>
         <div class="mt-3 flex gap-2">
-          <Button size="sm" variant="ghost">Backup now</Button>
+          <Button size="sm" variant="ghost" disabled title="Backup action disabled in this phase">Backup now</Button>
           <Button size="sm" variant="ghost" href="/backups">History</Button>
         </div>
       </Card>
+
+      <PolicyCard title="systemd read-only" icon="🧭" rows={[
+        { label: 'Unit', value: map.systemdDetail?.unit ?? map.config.systemdUnit },
+        { label: 'Source', value: map.systemdDetail?.source ?? 'fallback' },
+        { label: 'Loaded', value: map.systemdDetail?.loaded ?? false },
+        { label: 'Active state', value: map.systemdDetail?.activeState ?? 'unknown' },
+        { label: 'Sub state', value: map.systemdDetail?.subState ?? 'unknown' },
+        { label: 'Main PID', value: map.systemdDetail?.mainPid ? String(map.systemdDetail.mainPid) : '—' },
+        { label: 'Tasks', value: map.systemdDetail?.tasksCurrent ? String(map.systemdDetail.tasksCurrent) : '—' },
+        { label: 'Since', value: map.systemdDetail?.since ?? '—' },
+        { label: 'Error', value: map.systemdDetail?.error ?? '—' }
+      ]} />
 
       <PolicyCard title="Configuration" icon="⚙️" rows={[
         { label: 'systemd unit', value: map.config.systemdUnit },
