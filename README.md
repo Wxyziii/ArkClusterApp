@@ -54,6 +54,54 @@ cargo test                # config validation + db migration tests
 Optional env overrides: `ARK_MANAGER_CONFIG` (config path, default `manager.toml`),
 `ARK_MANAGER_DB` (SQLite path, default `data/manager.db`), `RUST_LOG` (e.g. `debug`).
 
+## Ubuntu Deployment
+T1.1.5 deployed the backend on the private Tailscale host `100.68.7.42`.
+Port `8787` was already in use there, so the manager is bound to
+`100.68.7.42:8788`.
+
+Deployment layout:
+```text
+/opt/ark-cluster-app                  # git checkout + release binary
+/etc/ark-cluster-manager/manager.toml # production config, root:marcel 640
+/var/lib/ark-cluster-manager          # SQLite DB/state
+/var/log/ark-cluster-manager          # reserved for logs if needed
+```
+
+Systemd service:
+```bash
+sudo systemctl status ark-cluster-manager.service --no-pager
+sudo journalctl -u ark-cluster-manager.service -n 100 --no-pager
+sudo systemctl restart ark-cluster-manager.service
+```
+
+The service runs as `marcel`, uses the release binary at
+`/opt/ark-cluster-app/services/manager/target/release/ark-manager`, and sets:
+```text
+ARK_MANAGER_CONFIG=/etc/ark-cluster-manager/manager.toml
+ARK_MANAGER_DB=/var/lib/ark-cluster-manager/manager.db
+```
+
+The API token lives only in `/etc/ark-cluster-manager/manager.toml`; do not
+commit it. To point the frontend at the deployed backend, copy `.env.example`
+to `.env` and set:
+```text
+VITE_ARK_API_BASE=http://100.68.7.42:8788
+VITE_ARK_API_TOKEN=<token from the server config>
+```
+
+Smoke tests:
+```bash
+curl -i http://100.68.7.42:8788/health
+curl -i http://100.68.7.42:8788/api/status       # should return 401
+curl -i -H "Authorization: Bearer <TOKEN>" http://100.68.7.42:8788/api/status
+curl -s -H "Authorization: Bearer <TOKEN>" http://100.68.7.42:8788/api/resources
+```
+
+Expected results: `/health` is public, `/api/*` requires Bearer auth,
+`/api/resources` reports `source: "host"` on Ubuntu, and `/api/servers`
+reports read-only systemd state for configured units. ARK units may show
+inactive/not-found until real ARK services exist.
+
 ### API endpoints (T1.1, read-only)
 `GET /health` is public. **Everything under `/api/*` requires
 `Authorization: Bearer <token>`** and returns `401` otherwise.
