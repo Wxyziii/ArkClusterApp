@@ -1,0 +1,8 @@
+/target
+/data
+# Real config + secrets — never commit. Use manager.example.toml as template.
+manager.toml
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

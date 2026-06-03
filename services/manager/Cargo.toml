@@ -1,0 +1,27 @@
+[package]
+name = "ark-manager"
+version = "0.1.0"
+edition = "2021"
+description = "ARK Smart Cluster Manager backend (Phase 1: safe skeleton, API contract, mock data)"
+license = "MIT"
+
+[[bin]]
+name = "ark-manager"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors", "set-header"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+anyhow = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

@@ -1,0 +1,135 @@
+# ARK Smart Cluster Manager — example configuration
+#
+# SAFETY / PRIVACY:
+#   This dashboard is intended for PRIVATE access over Tailscale or LAN ONLY.
+#   Do NOT port-forward it to the public internet. Keep the default localhost
+#   bind unless you have a Tailscale/private interface address to bind to.
+#
+# Copy this file to `manager.toml` and edit. Do NOT commit a real api_token.
+# The api_token can also be supplied via the ARK_MANAGER_API_TOKEN environment
+# variable, which OVERRIDES the value here (preferred for real deployments).
+
+[cluster]
+name = "Marcel ARK Cluster"
+id = "ark-prime-7f3a"
+# Cluster data directory. Must be an absolute path; ".." is rejected.
+directory = "/srv/ark/cluster"
+manager_version = "rust-manager v0.1.0"
+
+[server]
+# Default bind is loopback. For Tailscale set this to the tailnet IP (100.x.x.x)
+# or "0.0.0.0" ONLY if the host is already firewalled to the tailnet.
+bind_address = "127.0.0.1"
+port = 8787
+# Bearer token required for all /api/* routes. /health needs no token.
+# Leave empty here and set ARK_MANAGER_API_TOKEN in the environment instead.
+api_token = "change-me-dev-token"
+
+[resource_policy]
+ram_warn_pct = 70
+ram_pressure_pct = 82
+ram_emergency_pct = 92
+max_travel_servers = 2
+empty_shutdown_mins = 10
+home_standby_enabled = true
+never_stop_with_players = true
+home_stops_only_when_empty = true
+prefer_active_player_maps = true
+auto_restart_home = true
+
+[backup_policy]
+before_shutdown = true
+before_config_save = true
+before_mod_change = true
+retention = "Keep 14 daily + 6 weekly, prune older than 60 days"
+# Backup output directory (absolute, no "..").
+directory = "/srv/ark/backups"
+
+[discord]
+# Placeholder only — no bot is started in this phase.
+enabled = false
+guild = "Apex Survivors"
+status_channel = "#ark-status"
+# Real token must come from env later; never store it in committed config.
+bot_token_env = "ARK_MANAGER_DISCORD_TOKEN"
+
+# Travel slots. Exactly one slot must have role = "home". The number of slots
+# with role = "travel" must not exceed resource_policy.max_travel_servers.
+[[travel_slots]]
+name = "Home"
+role = "home"
+
+[[travel_slots]]
+name = "Travel A"
+role = "travel"
+
+[[travel_slots]]
+name = "Travel B"
+role = "travel"
+
+# Configured maps. Keys (id) must be unique. Each query/rcon/game port must be
+# unique across all maps. Exactly one map should be can_be_home + assigned Home,
+# but at minimum one map must declare can_be_home = true.
+[[maps]]
+id = "home-island"
+name = "The Island"
+alias = "island"
+ark_map_name = "TheIsland"
+systemd_unit = "ark-server@home-island.service"
+query_port = 27015
+rcon_port = 27020
+game_port = 7777
+slot_priority = 0
+can_be_home = true
+can_auto_stop_when_empty = false
+can_enter_standby = true
+assignment = "Home"
+mods = ["Structures Plus (S+)", "Awesome SpyGlass!", "Dino Storage v2", "Super Structures"]
+
+[[maps]]
+id = "travel-rag"
+name = "Ragnarok"
+alias = "ragnarok"
+ark_map_name = "Ragnarok"
+systemd_unit = "ark-server@travel-a.service"
+query_port = 27017
+rcon_port = 27022
+game_port = 7779
+slot_priority = 1
+can_be_home = false
+can_auto_stop_when_empty = true
+can_enter_standby = false
+assignment = "Travel A"
+mods = ["Structures Plus (S+)", "Awesome SpyGlass!", "Dino Storage v2"]
+
+[[maps]]
+id = "travel-ab"
+name = "Aberration"
+alias = "aberration"
+ark_map_name = "Aberration"
+systemd_unit = "ark-server@travel-b.service"
+query_port = 27019
+rcon_port = 27024
+game_port = 7781
+slot_priority = 2
+can_be_home = false
+can_auto_stop_when_empty = true
+can_enter_standby = false
+assignment = "Travel B"
+mods = ["Awesome SpyGlass!", "Dino Storage v2", "Aberration Ascended Loot"]
+
+[[maps]]
+id = "map-fjordur"
+name = "Fjordur"
+alias = "fjordur"
+ark_map_name = "Fjordur"
+systemd_unit = "ark-server@travel-c.service"
+query_port = 27021
+rcon_port = 27026
+game_port = 7783
+slot_priority = 5
+can_be_home = true
+can_auto_stop_when_empty = true
+can_enter_standby = true
+assignment = "Unassigned"
+mods = ["Structures Plus (S+)", "Awesome SpyGlass!", "Dino Storage v2"]
