@@ -21,6 +21,7 @@ use axum::http::{header, Method};
 use axum::routing::get;
 use axum::{middleware, Json, Router};
 use serde_json::json;
+use std::path::Path;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
@@ -106,8 +107,9 @@ async fn run() -> Result<(), i32> {
         auth::require_token,
     ));
 
-    let web_root = std::env::var("ARK_MANAGER_WEB_ROOT").unwrap_or_else(|_| "build".into());
-    let static_files = ServeDir::new(&web_root).fallback(ServeFile::new(format!("{web_root}/index.html")));
+    let web_root = web_root();
+    let static_files =
+        ServeDir::new(&web_root).fallback(ServeFile::new(format!("{web_root}/index.html")));
 
     let app = Router::new()
         .route("/health", get(health))
@@ -136,6 +138,18 @@ async fn run() -> Result<(), i32> {
         return Err(5);
     }
     Ok(())
+}
+
+fn web_root() -> String {
+    if let Ok(path) = std::env::var("ARK_MANAGER_WEB_ROOT") {
+        return path;
+    }
+    for candidate in ["build", "../../build", "../build"] {
+        if Path::new(candidate).join("index.html").exists() {
+            return candidate.into();
+        }
+    }
+    "build".into()
 }
 
 /// Unauthenticated health check.
