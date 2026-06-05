@@ -1,101 +1,223 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import {
-    PageHeader, Card, ConfigValueEditor, RawConfigEditorMock, Button, StatusBadge,
-    ConfirmActionDialog, SafetyWarningPanel, RestartRequiredBanner
+    PageHeader, Card, Button, StatusBadge, ConfirmActionDialog, SafetyWarningPanel,
+    RestartRequiredBanner, Select, TextInput, Textarea
   } from '$lib/components';
+  import { api, loadWithFallback, type ConfigResponse } from '$lib/api';
   import { configFields, rawGameIni, rawGusIni } from '$lib/data/mock';
+  import type { ConfigField } from '$lib/types';
 
-  let mode = $state<'form' | 'raw'>('form');
-  let fields = $state(structuredClone(configFields));
+  type Density = 'compact' | 'comfortable';
+  type Mode = 'fields' | 'raw' | 'history';
+  type ConfigVersion = {
+    id?: string;
+    ts?: string;
+    file?: string;
+    reason?: string;
+    status?: string;
+    actor?: string;
+    backupPath?: string;
+  };
+
+  let mode = $state<Mode>('fields');
+  let density = $state<Density>('compact');
+  let data = $state<ConfigResponse | null>(null);
+  let fields = $state<ConfigField[]>(structuredClone(configFields));
   let gameIni = $state(rawGameIni);
   let gusIni = $state(rawGusIni);
-  let target = $state<'Home' | 'Travel maps' | 'All maps'>('All maps');
-  let backupFirst = $state(true);
-  let confirmOpen = $state(false);
+  let versions = $state<ConfigVersion[]>([]);
+  let fromFallback = $state(false);
+  let error = $state<string | null>(null);
+  let applyOpen = $state(false);
+  let pending = $state<{ file: string; key: string; value: string } | null>(null);
+  let rawFile = $state<'Game.ini' | 'GameUserSettings.ini'>('GameUserSettings.ini');
+  let rawKey = $state('ServerMessage');
+  let rawValue = $state('');
+  let saving = $state(false);
+  let lastResult = $state<string | null>(null);
 
   let groups = $derived([...new Set(fields.map((f) => f.group))]);
-  let dirty = $derived(
-    JSON.stringify(fields.map((f) => f.value)) !== JSON.stringify(configFields.map((f) => f.value)) ||
-      gameIni !== rawGameIni ||
-      gusIni !== rawGusIni
-  );
-  let restartNeeded = $derived(
-    fields.some((f, i) => f.restartRequired && f.value !== configFields[i].value) || gusIni !== rawGusIni || gameIni !== rawGameIni
-  );
-  let invalidCount = $derived(
-    fields.filter((f) => f.type === 'number' && typeof f.value === 'number' && ((f.min != null && f.value < f.min) || (f.max != null && f.value > f.max))).length
-  );
+  let writable = $derived(!!data?.writable && !fromFallback);
+  let restartNeeded = $derived(!!data?.restartRequired);
+  let rowPad = $derived(density === 'compact' ? 'py-1.5' : 'py-2.5');
 
-  function rollback() {
-    fields = structuredClone(configFields);
-    gameIni = rawGameIni;
-    gusIni = rawGusIni;
+  onMount(load);
+
+  async function load() {
+    const [cfg, hist] = await Promise.all([
+      loadWithFallback(() => api.config(), {
+        fields: configFields,
+        gameIni: rawGameIni,
+        gameUserSettingsIni: rawGusIni,
+        restartRequired: true,
+        writable: false
+      }),
+      loadWithFallback(() => api.configVersions(), { versions: [] })
+    ]);
+    data = cfg.data;
+    fields = cfg.data.fields ?? [];
+    gameIni = cfg.data.gameIni;
+    gusIni = cfg.data.gameUserSettingsIni;
+    versions = hist.data.versions as ConfigVersion[];
+    fromFallback = cfg.fromFallback || hist.fromFallback;
+    error = cfg.error ?? hist.error;
+  }
+
+  function queueField(field: ConfigField) {
+    pending = {
+      file: 'GameUserSettings.ini',
+      key: field.key,
+      value: String(field.value)
+    };
+    applyOpen = true;
+  }
+
+  function fieldToString(field: ConfigField) {
+    return String(field.value);
+  }
+
+  function updateField(field: ConfigField, value: string) {
+    field.value = field.type === 'number' ? Number(value) : field.type === 'bool' ? value === 'true' : value;
+    fields = fields;
+  }
+
+  function queueRaw() {
+    pending = { file: rawFile, key: rawKey.trim(), value: rawValue };
+    applyOpen = true;
+  }
+
+  async function applyPending() {
+    if (!pending) return;
+    saving = true;
+    error = null;
+    try {
+      await api.configApply({ ...pending, confirm: true, reason: 'web_ui_config_apply' });
+      lastResult = `Applied ${pending.key} to ${pending.file}`;
+      applyOpen = false;
+      await load();
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'config apply failed';
+    } finally {
+      saving = false;
+    }
   }
 </script>
 
-<PageHeader title="Config Editor" icon="⚙️" subtitle="Safe ARK Game.ini / GameUserSettings.ini editing (mock)">
+<PageHeader title="Config Editor" icon="⚙️" subtitle="Live shared Game.ini / GameUserSettings.ini editor">
   {#snippet actions()}
-    {#if dirty}<StatusBadge label="unsaved changes" tone="amber" dot />{/if}
-    <div class="flex rounded-lg border border-[#2a2a2a] p-0.5">
-      <button class="rounded px-2.5 py-1 text-xs {mode === 'form' ? 'bg-[#222222] text-[#7c9a82]' : 'text-[#8c8c8c]'}" onclick={() => (mode = 'form')}>Safe Form</button>
-      <button class="rounded px-2.5 py-1 text-xs {mode === 'raw' ? 'bg-[#222222] text-[#7c9a82]' : 'text-[#8c8c8c]'}" onclick={() => (mode = 'raw')}>Advanced Raw</button>
-    </div>
+    <StatusBadge label={writable ? 'writes enabled' : 'read-only'} tone={writable ? 'green' : 'gray'} dot />
+    <Select bind:value={density} options={['compact', 'comfortable']} size="sm" />
+    <Button size="sm" variant="ghost" onclick={load}>Refresh</Button>
   {/snippet}
 </PageHeader>
 
-{#if restartNeeded}<div class="mb-5"><RestartRequiredBanner reason="Some changed values require a restart." /></div>{/if}
+{#if restartNeeded}<div class="mb-4"><RestartRequiredBanner reason="Some config changes may require ARK restart." /></div>{/if}
+{#if fromFallback}<div class="mb-4"><SafetyWarningPanel tone="warn" title="Fallback data">Backend config unavailable: {error}</SafetyWarningPanel></div>{/if}
+{#if error && !fromFallback}<div class="mb-4"><SafetyWarningPanel tone="danger" title="Config error">{error}</SafetyWarningPanel></div>{/if}
+{#if lastResult}<div class="mb-4"><SafetyWarningPanel tone="info" title="Applied">{lastResult}</SafetyWarningPanel></div>{/if}
 
-<div class="mb-5">
-  <SafetyWarningPanel tone="info" title="Changes are sandboxed">
-    Saving always creates a backup first. No raw file paths or shell commands are exposed. Values are validated before apply.
-  </SafetyWarningPanel>
+<div class="mb-4 card-elevated flex flex-wrap items-center gap-2 p-2">
+  {#each [{ id: 'fields', label: 'Compact fields' }, { id: 'raw', label: 'Raw INI' }, { id: 'history', label: 'History' }] as tab}
+    <button
+      class="rounded-md px-3 py-1.5 text-xs {mode === tab.id ? 'bg-[#222222] text-[#7c9a82]' : 'text-[#8c8c8c] hover:bg-[#181818]'}"
+      onclick={() => (mode = tab.id as Mode)}
+    >
+      {tab.label}
+    </button>
+  {/each}
+  <span class="ml-auto text-[11px] text-[#8c8c8c]">{data?.shared?.sharedConfigDir ?? 'shared config dir unavailable'}</span>
 </div>
 
-{#if mode === 'form'}
-  <div class="space-y-5">
-    {#each groups as g (g)}
-      <Card title={g} icon="🎚️">
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {#each fields as field, i (field.key)}
-            {#if field.group === g}<ConfigValueEditor bind:field={fields[i]} />{/if}
+{#if mode === 'fields'}
+  <div class="space-y-4">
+    {#each groups as group}
+      <Card title={group} icon="🎚️" pad={false}>
+        <div class="divide-y divide-[#2a2a2a]/50">
+          {#each fields.filter((f) => f.group === group) as field, i (field.key)}
+            <div class="grid grid-cols-1 gap-2 px-3 {rowPad} md:grid-cols-[minmax(180px,260px)_1fr_auto] md:items-center">
+              <div>
+                <p class="text-xs font-medium text-[#ededed]">{field.label}</p>
+                <p class="font-mono text-[10px] text-[#8c8c8c]">{field.key}</p>
+              </div>
+              <div>
+                {#if field.type === 'bool'}
+                  <select
+                    value={fieldToString(field)}
+                    onchange={(e) => updateField(field, (e.currentTarget as HTMLSelectElement).value)}
+                    class="w-full rounded-lg border border-[#2a2a2a] bg-[#0a0a0a] px-2.5 py-1 text-xs text-[#ededed] outline-none focus:border-[#3a3a3a]"
+                  >
+                    <option value="true">true</option>
+                    <option value="false">false</option>
+                  </select>
+                {:else if field.type === 'enum' && field.options}
+                  <select
+                    value={fieldToString(field)}
+                    onchange={(e) => updateField(field, (e.currentTarget as HTMLSelectElement).value)}
+                    class="w-full rounded-lg border border-[#2a2a2a] bg-[#0a0a0a] px-2.5 py-1 text-xs text-[#ededed] outline-none focus:border-[#3a3a3a]"
+                  >
+                    {#each field.options as opt (opt)}<option value={opt}>{opt}</option>{/each}
+                  </select>
+                {:else}
+                  <input
+                    type={field.type === 'number' ? 'number' : 'text'}
+                    value={fieldToString(field)}
+                    min={field.min}
+                    max={field.max}
+                    step={field.step}
+                    oninput={(e) => updateField(field, (e.currentTarget as HTMLInputElement).value)}
+                    class="w-full rounded-lg border border-[#2a2a2a] bg-[#0a0a0a] px-2.5 py-1 text-xs text-[#ededed] outline-none focus:border-[#3a3a3a]"
+                  />
+                {/if}
+                {#if density === 'comfortable'}<p class="mt-1 text-[11px] text-[#8c8c8c]">{field.hint}</p>{/if}
+              </div>
+              <Button size="sm" variant="ghost" disabled={!writable} onclick={() => queueField(field)}>Apply</Button>
+            </div>
           {/each}
         </div>
       </Card>
     {/each}
   </div>
-{:else}
-  <div class="grid grid-cols-1 gap-5 lg:grid-cols-2">
-    <RawConfigEditorMock filename="Game.ini" bind:value={gameIni} original={rawGameIni} />
-    <RawConfigEditorMock filename="GameUserSettings.ini" bind:value={gusIni} original={rawGusIni} />
+{:else if mode === 'raw'}
+  <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
+    <Card title="GameUserSettings.ini" icon="📄">
+      <Textarea value={gusIni} rows={18} disabled mono />
+    </Card>
+    <Card title="Game.ini" icon="📄">
+      <Textarea value={gameIni} rows={18} disabled mono />
+    </Card>
   </div>
+  <div class="mt-4">
+    <Card title="Safe key apply" icon="🛠️">
+      <div class="grid grid-cols-1 gap-3 md:grid-cols-[180px_1fr_1fr_auto]">
+        <Select bind:value={rawFile} options={['GameUserSettings.ini', 'Game.ini']} />
+        <TextInput bind:value={rawKey} placeholder="Key" />
+        <TextInput bind:value={rawValue} placeholder="Value" />
+        <Button variant="primary" disabled={!writable || !rawKey.trim()} onclick={queueRaw}>Preview/apply</Button>
+      </div>
+      <p class="mt-2 text-[11px] text-[#8c8c8c]">Password keys are rejected/masked by backend. Full raw-file overwrite is intentionally not exposed.</p>
+    </Card>
+  </div>
+{:else}
+  <Card title="Config snapshots" icon="🕓" pad={false}>
+    <div class="overflow-x-auto">
+      <table class="w-full text-xs">
+        <thead><tr class="border-b border-[#2a2a2a] text-left text-[#8c8c8c]"><th class="p-2">Time</th><th class="p-2">File</th><th class="p-2">Reason</th><th class="p-2">Status</th></tr></thead>
+        <tbody class="divide-y divide-[#2a2a2a]/50">
+          {#each versions as row}
+            <tr><td class="p-2 font-mono">{row.ts ?? '—'}</td><td class="p-2">{row.file ?? '—'}</td><td class="p-2">{row.reason ?? '—'}</td><td class="p-2"><StatusBadge label={row.status ?? 'snapshot'} tone="cyan" size="sm" /></td></tr>
+          {:else}
+            <tr><td colspan="4" class="p-4 text-center text-[#8c8c8c]">No config snapshots yet.</td></tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  </Card>
 {/if}
 
-<!-- save bar -->
-<div class="card-elevated mt-5 flex flex-wrap items-center justify-between gap-3 p-4">
-  <div class="flex flex-wrap items-center gap-4">
-    <label class="flex items-center gap-2 text-xs text-[#8c8c8c]">
-      Apply to
-      <select bind:value={target} class="rounded-lg border border-[#2a2a2a] bg-[#0a0a0a] px-2 py-1 text-xs text-[#ededed]">
-        <option>Home</option><option>Travel maps</option><option>All maps</option>
-      </select>
-    </label>
-    <label class="flex items-center gap-2 text-xs text-[#8c8c8c]">
-      <input type="checkbox" bind:checked={backupFirst} class="accent-[#3a3a3a]" /> Backup before save
-    </label>
-    {#if invalidCount}<StatusBadge label="{invalidCount} invalid value(s)" tone="red" />{/if}
-  </div>
-  <div class="flex gap-2">
-    <Button variant="ghost" disabled={!dirty} onclick={rollback}>Rollback</Button>
-    <Button variant="primary" disabled={!dirty || invalidCount > 0} onclick={() => (confirmOpen = true)}>Save config</Button>
-  </div>
-</div>
-
-<ConfirmActionDialog bind:open={confirmOpen} title="Save configuration to {target}?" tone="warn" confirmLabel="Save & apply" onconfirm={() => {}}>
+<ConfirmActionDialog bind:open={applyOpen} title="Apply config change?" tone="warn" confirmLabel={saving ? 'Applying…' : 'Apply'} onconfirm={applyPending}>
   {#snippet body()}
-    <p>Applying changed values to <strong>{target}</strong>.</p>
-    <ul class="space-y-1 text-xs text-[#8c8c8c]">
-      <li>{backupFirst ? '✓ A config backup will be taken first.' : '⚠️ No backup selected — not recommended.'}</li>
-      {#if restartNeeded}<li class="text-[#bfa15e]">🔄 Some values require a map restart to take effect.</li>{/if}
-    </ul>
+    <p class="text-sm">Apply <code>{pending?.key}</code> in <strong>{pending?.file}</strong>.</p>
+    <SafetyWarningPanel tone="info" title="Backend safety">Backend writes a snapshot and masks secrets. Restart may be needed.</SafetyWarningPanel>
   {/snippet}
 </ConfirmActionDialog>

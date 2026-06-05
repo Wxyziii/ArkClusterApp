@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { PageHeader, Card, BackupTable, Button, StatusBadge, ConfirmActionDialog, SafetyWarningPanel, PolicyCard } from '$lib/components';
+  import { PageHeader, Card, BackupTable, Button, ConfirmActionDialog, SafetyWarningPanel, PolicyCard } from '$lib/components';
   import * as mock from '$lib/data/mock';
   import { api, loadWithFallback, type Capabilities } from '$lib/api';
   import type { Backup } from '$lib/types';
@@ -48,16 +48,6 @@
     {capabilities?.backup.reason ?? 'Loading backup capability.'} Restore and delete remain disabled.
   </SafetyWarningPanel>
 </div>
-
-<div class="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-  {#each [{ l: 'Total', v: backups.length, t: 'cyan' }, { l: 'Success', v: backups.filter((b) => b.status === 'success').length, t: 'green' }, { l: 'Running', v: backups.filter((b) => b.status === 'running' || b.status === 'verifying').length, t: 'amber' }, { l: 'Failed', v: backups.filter((b) => b.status === 'failed').length, t: 'red' }] as s (s.l)}
-    <div class="card-elevated p-3 text-center"><p class="text-2xl font-bold tabular-nums">{s.v}</p><p class="mt-0.5 text-xs text-[#8c8c8c]">{s.l}</p></div>
-  {/each}
-</div>
-
-{#if backups.some((b) => b.status === 'failed')}
-  <div class="mb-5"><SafetyWarningPanel tone="danger" title="A backup failed">Review the failed backup below. Auto-shutdown will retry; persistent failures may indicate disk problems.</SafetyWarningPanel></div>
-{/if}
 
 <div class="grid grid-cols-1 gap-5 lg:grid-cols-4">
   <div class="lg:col-span-3">

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import Button from './Button.svelte';
+  import TextInput from './TextInput.svelte';
 
   let {
     open = $bindable(false),
@@ -60,12 +61,7 @@
             <label for="confirm-phrase" class="mb-1 block text-xs text-[#8c8c8c]">
               Type <code class="rounded bg-[#0a0a0a] px-1.5 py-0.5 font-mono text-[#b5544f]">{requirePhrase}</code> to confirm
             </label>
-            <input
-              id="confirm-phrase"
-              bind:value={typed}
-              autocomplete="off"
-              class="w-full rounded-lg border border-[#2a2a2a] bg-[#0a0a0a] px-3 py-2 font-mono text-sm text-[#ededed] outline-none focus:border-[#b5544f]"
-            />
+            <TextInput id="confirm-phrase" bind:value={typed} mono invalid={typed.length > 0 && !canConfirm} />
           </div>
         {/if}
       </div>

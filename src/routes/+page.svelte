@@ -97,32 +97,20 @@
   capabilities={capabilities}
 />
 
-<!-- top status strip -->
-<div class="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
-  <div class="card-elevated col-span-2 flex flex-col justify-center p-4 lg:col-span-1">
+<!-- compact status strip -->
+<div class="mb-5 card-elevated flex flex-wrap items-center gap-x-6 gap-y-3 p-4">
+  <div class="mr-auto">
     <p class="text-xs text-[#8c8c8c]">Cluster state</p>
-    <p class="mt-1 flex items-center gap-2 text-lg font-bold"
+    <p class="mt-1 text-lg font-bold"
       class:text-[#7c9a82]={pl.tone === 'green'} class:text-[#bfa15e]={pl.tone === 'amber'} class:text-[#b5544f]={pl.tone === 'red'}>
       {pl.label}
     </p>
-    <p class="mt-1 text-[11px] text-[#8c8c8c]">{totalPlayers} players · {runningMaps} maps online</p>
-    <p class="mt-0.5 text-[10px] text-[#8c8c8c]">source: {status?.resourcePressure.source ?? resources.source}</p>
+    <p class="mt-0.5 text-[11px] text-[#8c8c8c]">{totalPlayers} players · {runningMaps} maps · src {status?.resourcePressure.source ?? resources.source}</p>
   </div>
-  {#each clusterStatus as s (s.label)}
-    <div class="card-elevated flex flex-col justify-center p-4">
-      <p class="text-xs text-[#8c8c8c]">{s.label}</p>
-      <div class="mt-1.5"><StatusBadge label={s.value} tone={s.tone} dot pulse={s.tone !== 'cyan'} /></div>
-    </div>
-  {/each}
-</div>
-
-<div class="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
-  {#each capabilityStatus as c (c.label)}
-    <div class="card-elevated p-3">
-      <p class="text-xs text-[#8c8c8c]">{c.label}</p>
-      <div class="mt-1"><StatusBadge label={c.value} tone={c.tone} size="sm" /></div>
-    </div>
-  {/each}
+  <div class="flex flex-wrap items-center gap-2">
+    {#each clusterStatus as s (s.label)}<StatusBadge label="{s.label}: {s.value}" tone={s.tone} dot size="sm" />{/each}
+    {#each capabilityStatus as c (c.label)}<StatusBadge label="{c.label}: {c.value}" tone={c.tone} size="sm" />{/each}
+  </div>
 </div>
 
 <!-- system health -->

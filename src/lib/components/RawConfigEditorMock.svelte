@@ -1,5 +1,6 @@
 <script lang="ts">
   import StatusBadge from './StatusBadge.svelte';
+  import Textarea from './Textarea.svelte';
   let {
     filename,
     value = $bindable(),
@@ -25,12 +26,7 @@
       {#if warnings.length}<StatusBadge label="{warnings.length} syntax warn" tone="red" size="sm" />{:else}<StatusBadge label="valid" tone="green" size="sm" />{/if}
     </div>
   </header>
-  <textarea
-    bind:value
-    spellcheck="false"
-    rows="14"
-    class="w-full resize-y bg-[#0a0a0a] p-3 font-mono text-xs leading-relaxed text-[#ededed] outline-none"
-  ></textarea>
+  <Textarea bind:value rows={14} mono />
   {#if warnings.length}
     <p class="border-t border-[#2a2a2a] bg-[#b5544f]/8 px-4 py-2 font-mono text-[11px] text-[#b5544f]">
       ⚠ Possible syntax issue on line(s): {warnings.join(', ')} — expected key=value.

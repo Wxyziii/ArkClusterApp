@@ -1,27 +1,62 @@
 <script lang="ts">
   import '../app.css';
+  import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import { nav } from '$lib/nav';
   import { cluster, pressureLevel, discord } from '$lib/data/mock';
+  import { api } from '$lib/api';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
   import TailscaleStatusBadge from '$lib/components/TailscaleStatusBadge.svelte';
   import type { Snippet } from 'svelte';
+  import type { Tone } from '$lib/types';
 
   let { children }: { children: Snippet } = $props();
 
   let sidebarOpen = $state(false);
   let userMenuOpen = $state(false);
+  const initialPressure = pressureLevel();
   let pl = $derived(pressureLevel());
   let current = $derived($page.url.pathname);
+  let clusterName = $state(cluster.name);
+  let clusterId = $state(cluster.id);
+  let managerTone = $state<Tone>('green');
+  let managerLabel = $state('Rust mgr');
+  let discordTone = $state<Tone>(discord.online ? 'green' : 'red');
+  let discordLabel = $state('Discord');
+  let pressureLabel = $state(initialPressure.label);
+  let pressureTone = $state<Tone>(initialPressure.tone);
 
   // group nav
   const groups = [...new Set(nav.map((n) => n.group))];
   function isActive(href: string) {
     return href === '/' ? current === '/' : current.startsWith(href);
   }
+
+  onMount(() => {
+    refreshShell();
+    const id = window.setInterval(refreshShell, 30000);
+    return () => window.clearInterval(id);
+  });
+
+  async function refreshShell() {
+    try {
+      const s = await api.status();
+      clusterName = s.cluster.name;
+      clusterId = s.cluster.id;
+      managerTone = s.manager.tone as Tone;
+      managerLabel = s.manager.status;
+      discordTone = s.discord.tone as Tone;
+      discordLabel = s.discord.status;
+      pressureLabel = s.resourcePressure.label;
+      pressureTone = s.resourcePressure.tone as Tone;
+    } catch {
+      pressureLabel = pl.label;
+      pressureTone = pl.tone;
+    }
+  }
 </script>
 
-<div class="ark-grid flex min-h-screen text-[#ededed]">
+<div class="ark-grid flex h-screen overflow-hidden text-[#ededed]">
   <!-- Sidebar -->
   <aside
     class="fixed inset-y-0 left-0 z-40 w-60 transform border-r border-[#2a2a2a] bg-[#121212] transition-transform lg:static lg:translate-x-0 {sidebarOpen ? 'translate-x-0' : '-translate-x-full'}"
@@ -66,22 +101,22 @@
   {/if}
 
   <!-- Main -->
-  <div class="flex min-w-0 flex-1 flex-col">
+  <div class="flex min-w-0 flex-1 flex-col overflow-hidden">
     <!-- Topbar -->
-    <header class="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-[#2a2a2a] bg-[#0a0a0a]/90 px-4 backdrop-blur">
+    <header class="z-20 flex h-14 shrink-0 items-center gap-3 border-b border-[#2a2a2a] bg-[#0a0a0a]/90 px-4 backdrop-blur">
       <button class="lg:hidden" onclick={() => (sidebarOpen = !sidebarOpen)} aria-label="Toggle menu">☰</button>
       <div class="min-w-0">
-        <p class="truncate text-sm font-semibold">{cluster.name}</p>
-        <p class="hidden font-mono text-[10px] text-[#8c8c8c] sm:block">{cluster.id}</p>
+        <p class="truncate text-sm font-semibold">{clusterName}</p>
+        <p class="hidden font-mono text-[10px] text-[#8c8c8c] sm:block">{clusterId}</p>
       </div>
 
       <div class="ml-auto flex items-center gap-2">
         <div class="hidden items-center gap-2 md:flex">
           <TailscaleStatusBadge compact />
-          <StatusBadge label="Rust mgr" tone="green" dot size="sm" />
-          <StatusBadge label="Discord" tone={discord.online ? 'green' : 'red'} dot size="sm" />
+          <StatusBadge label={managerLabel} tone={managerTone} dot size="sm" />
+          <StatusBadge label={discordLabel} tone={discordTone} dot size="sm" />
         </div>
-        <StatusBadge label={pl.label} tone={pl.tone} dot pulse={pl.tone !== 'green'} />
+        <StatusBadge label={pressureLabel} tone={pressureTone} dot pulse={pressureTone !== 'green'} />
 
         <!-- user menu -->
         <div class="relative">
@@ -108,7 +143,7 @@
       </div>
     </header>
 
-    <main class="flex-1 p-4 sm:p-6">
+    <main class="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
       {@render children()}
     </main>
   </div>

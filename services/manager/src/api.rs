@@ -1,15 +1,15 @@
 //! HTTP API. Versioned routes under `/api`, all behind Bearer auth (mounted by
 //! the caller). Every handler returns realistic mock data matching the UI.
 //!
-//! Phase 1 exposes READ-ONLY endpoints. No start/stop/restart, config write,
-//! mod mutation, or backup/restore routes exist — those remain unimplemented by
-//! design so the API cannot affect the host.
+//! Mutating routes are guarded by operation flags, confirmation checks, and
+//! audit entries so the API cannot touch the host by accident.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::config::{MapConfig, ServerSlot};
@@ -46,14 +46,23 @@ pub fn router() -> Router<AppState> {
         .route("/players", get(players))
         .route("/chat/recent", get(chat_recent))
         .route("/config", get(config))
+        .route("/config/raw", get(config_raw))
+        .route("/config/preview", post(config_preview))
+        .route("/config/apply", post(config_set))
+        .route("/config/rollback", post(config_rollback))
+        .route("/config/versions", get(config_versions))
         .route("/config/set", post(config_set))
         .route("/mods", get(mods))
+        .route("/mods/lookup", post(mod_lookup))
         .route("/mods/add", post(mod_add))
+        .route("/mods/update", post(mod_update))
         .route("/mods/enable", post(mod_enable))
         .route("/mods/disable", post(mod_disable))
         .route("/mods/remove", post(mod_remove))
+        .route("/mods/reorder", post(mod_reorder))
         .route("/maintenance/status", get(maintenance_status))
         .route("/maintenance/update/ark", post(maintenance_ark_update))
+        .route("/maintenance/ark/update", post(maintenance_ark_update))
         .route("/discord/status", get(discord_status))
         .route("/settings", get(settings))
 }
@@ -476,6 +485,42 @@ async fn config(State(s): State<AppState>) -> impl IntoResponse {
     }))
 }
 
+async fn config_raw(State(s): State<AppState>) -> impl IntoResponse {
+    let shared = config_edit::read_shared(&s.config);
+    Json(json!({
+        "gameIni": shared.game_ini,
+        "gameUserSettingsIni": shared.game_user_settings_ini,
+        "shared": shared,
+        "masked": true
+    }))
+}
+
+async fn config_preview(
+    State(s): State<AppState>,
+    Json(req): Json<config_edit::ConfigSetRequest>,
+) -> impl IntoResponse {
+    if !s.config.operations.config_writes_enabled {
+        return api_error(
+            StatusCode::FORBIDDEN,
+            "CONFIG_WRITES_DISABLED",
+            "config writes disabled in manager config",
+            json!({}),
+        );
+    }
+    Json(json!({
+        "accepted": true,
+        "preview": {
+            "file": req.file,
+            "key": req.key,
+            "value": req.value,
+            "restartRequired": true,
+            "backupFirst": true,
+            "masked": req.key.to_ascii_lowercase().contains("password")
+        }
+    }))
+    .into_response()
+}
+
 async fn config_set(
     State(s): State<AppState>,
     Json(req): Json<config_edit::ConfigSetRequest>,
@@ -491,6 +536,24 @@ async fn config_set(
     }
 }
 
+async fn config_rollback(State(s): State<AppState>) -> impl IntoResponse {
+    Json(json!({
+        "accepted": false,
+        "reason": "rollback requires selecting a config snapshot; direct rollback endpoint is not enabled",
+        "writable": s.config.operations.config_writes_enabled
+    }))
+}
+
+async fn config_versions(State(s): State<AppState>) -> impl IntoResponse {
+    let rows = sqlx::query_as::<_, ConfigVersionRow>(
+        "SELECT id, ts, actor, file, reason, backup_path, status FROM config_snapshots ORDER BY ts DESC LIMIT 50",
+    )
+    .fetch_all(&s.pool)
+    .await
+    .unwrap_or_default();
+    Json(json!({ "versions": rows }))
+}
+
 async fn mods(State(s): State<AppState>) -> impl IntoResponse {
     match mod_ops::list(&s.pool, &s.config).await {
         Ok(value) => Json(value).into_response(),
@@ -503,11 +566,57 @@ async fn mods(State(s): State<AppState>) -> impl IntoResponse {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModLookupRequest {
+    workshop_id: Option<String>,
+    url: Option<String>,
+}
+
+async fn mod_lookup(
+    State(s): State<AppState>,
+    Json(req): Json<ModLookupRequest>,
+) -> impl IntoResponse {
+    let raw = req.workshop_id.or(req.url).unwrap_or_default();
+    let id = raw
+        .split("id=")
+        .nth(1)
+        .unwrap_or(&raw)
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>();
+    if id.is_empty() {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "INVALID_WORKSHOP_ID",
+            "provide a Steam Workshop URL or numeric id",
+            json!({}),
+        );
+    }
+    Json(json!({
+        "workshopId": id,
+        "name": format!("Steam Workshop {}", id),
+        "url": format!("https://steamcommunity.com/sharedfiles/filedetails/?id={}", id),
+        "game": "ARK: Survival Evolved",
+        "installAvailable": s.config.operations.mod_management_enabled,
+        "mutable": s.config.operations.mod_management_enabled,
+        "disabledReason": if s.config.operations.mod_management_enabled { "" } else { "mod management disabled in manager config" }
+    }))
+    .into_response()
+}
+
 async fn mod_add(
     State(s): State<AppState>,
     Json(req): Json<mod_ops::ModMutation>,
 ) -> impl IntoResponse {
     mod_mutation(s, req, "add").await
+}
+
+async fn mod_update(
+    State(s): State<AppState>,
+    Json(req): Json<mod_ops::ModMutation>,
+) -> impl IntoResponse {
+    mod_mutation(s, req, "update").await
 }
 
 async fn mod_enable(
@@ -529,6 +638,19 @@ async fn mod_remove(
     Json(req): Json<mod_ops::ModMutation>,
 ) -> impl IntoResponse {
     mod_mutation(s, req, "remove").await
+}
+
+async fn mod_reorder(State(s): State<AppState>) -> impl IntoResponse {
+    api_error(
+        StatusCode::FORBIDDEN,
+        "MOD_REORDER_DISABLED",
+        if s.config.operations.mod_management_enabled {
+            "mod reorder is not implemented yet"
+        } else {
+            "mod management disabled in manager config"
+        },
+        json!({}),
+    )
 }
 
 async fn mod_mutation(
@@ -577,19 +699,82 @@ async fn maintenance_ark_update(
 }
 
 async fn discord_status(State(s): State<AppState>) -> impl IntoResponse {
+    let service = read_unit_summary("ark-cluster-discord-bot.service").await;
     Json(json!({
         "status": {
-            "online": s.config.discord.enabled,
+            "online": service.active,
             "guild": s.config.discord.guild,
             "statusChannel": s.config.discord.status_channel,
-            "lastHeartbeat": "2026-06-03 20:55:12",
+            "service": service,
+            "lastHeartbeat": if service.active { "service active" } else { "unknown" },
             "permissionsOk": true,
-            "implemented": false
+            "implemented": true,
+            "dashboard": {
+                "category": "ARK Cluster",
+                "channels": ["ark-status", "ark-travel", "ark-players", "ark-logs", "ark-admin"],
+                "stateFile": "/var/lib/ark-cluster-discord-bot/state.json"
+            }
         },
         "commands": mock::discord_commands(),
         "events": mock::discord_events(),
         "alertSettings": mock::alert_settings()
     }))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UnitSummary {
+    active: bool,
+    enabled: bool,
+    active_state: String,
+    sub_state: String,
+}
+
+async fn read_unit_summary(_unit: &str) -> UnitSummary {
+    #[cfg(target_os = "linux")]
+    {
+        let output = tokio::process::Command::new("systemctl")
+            .args([
+                "show",
+                _unit,
+                "-p",
+                "ActiveState",
+                "-p",
+                "SubState",
+                "-p",
+                "UnitFileState",
+                "--no-pager",
+            ])
+            .output()
+            .await;
+        if let Ok(out) = output {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let mut active_state = "unknown".to_string();
+            let mut sub_state = "unknown".to_string();
+            let mut unit_file_state = "unknown".to_string();
+            for line in text.lines() {
+                if let Some(v) = line.strip_prefix("ActiveState=") {
+                    active_state = v.into();
+                } else if let Some(v) = line.strip_prefix("SubState=") {
+                    sub_state = v.into();
+                } else if let Some(v) = line.strip_prefix("UnitFileState=") {
+                    unit_file_state = v.into();
+                }
+            }
+            return UnitSummary {
+                active: active_state == "active",
+                enabled: unit_file_state == "enabled",
+                active_state,
+                sub_state,
+            };
+        }
+    }
+    UnitSummary {
+        active: false,
+        enabled: false,
+        active_state: "unavailable".into(),
+        sub_state: "unknown".into(),
+    }
 }
 
 async fn settings(State(s): State<AppState>) -> impl IntoResponse {
@@ -631,9 +816,10 @@ async fn settings(State(s): State<AppState>) -> impl IntoResponse {
             "retention": b.retention
         },
         "configModPolicy": {
-            "configWritable": false,
-            "modsMutable": false,
-            "note": "Config writes and mod changes are not implemented in this phase."
+            "configWritable": s.config.operations.config_writes_enabled,
+            "modsMutable": s.config.operations.mod_management_enabled,
+            "maintenanceEnabled": s.config.operations.maintenance_enabled,
+            "note": "Secrets are masked. Mutations follow manager operation flags and confirmation checks."
         },
         "security": {
             "authScheme": "Bearer token",
@@ -647,7 +833,7 @@ async fn settings(State(s): State<AppState>) -> impl IntoResponse {
             "unit": m.config.systemd_unit,
             "state": m.systemd,
             "detail": m.systemd_detail,
-            "controlImplemented": false
+            "controlImplemented": s.config.operations.systemd_control_enabled
         })).collect::<Vec<_>>()
     }))
 }
@@ -981,6 +1167,18 @@ struct ActivityRow {
     target_map: String,
     message: String,
     detail: String,
+}
+
+#[derive(serde::Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+struct ConfigVersionRow {
+    id: String,
+    ts: String,
+    actor: String,
+    file: String,
+    reason: String,
+    backup_path: String,
+    status: String,
 }
 
 fn epoch_secs() -> u64 {

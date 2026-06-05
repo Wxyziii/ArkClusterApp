@@ -183,24 +183,13 @@
         <p class="mt-2 text-xs text-[#8c8c8c]">Actions are sent only for configured units and are blocked by backend guard rules.</p>
       </Card>
 
-      <PolicyCard title="systemd read-only" icon="🧭" rows={[
+      <PolicyCard title="systemd & config" icon="⚙️" rows={[
         { label: 'Unit', value: map.systemdDetail?.unit ?? map.config.systemdUnit },
-        { label: 'Source', value: map.systemdDetail?.source ?? 'fallback' },
-        { label: 'Loaded', value: map.systemdDetail?.loaded ?? false },
-        { label: 'Active state', value: map.systemdDetail?.activeState ?? 'unknown' },
-        { label: 'Sub state', value: map.systemdDetail?.subState ?? 'unknown' },
+        { label: 'Active / sub state', value: `${map.systemdDetail?.activeState ?? 'unknown'} · ${map.systemdDetail?.subState ?? 'unknown'}` },
         { label: 'Main PID', value: map.systemdDetail?.mainPid ? String(map.systemdDetail.mainPid) : '—' },
-        { label: 'Tasks', value: map.systemdDetail?.tasksCurrent ? String(map.systemdDetail.tasksCurrent) : '—' },
         { label: 'Since', value: map.systemdDetail?.since ?? '—' },
-        { label: 'Error', value: map.systemdDetail?.error ?? '—' }
-      ]} />
-
-      <PolicyCard title="Configuration" icon="⚙️" rows={[
-        { label: 'systemd unit', value: map.config.systemdUnit },
         { label: 'ARK map', value: map.config.arkMapName },
-        { label: 'Query port', value: String(map.config.queryPort) },
-        { label: 'RCON port', value: String(map.config.rconPort) },
-        { label: 'Game port', value: String(map.config.gamePort) },
+        { label: 'Ports (query/rcon/game)', value: `${map.config.queryPort} · ${map.config.rconPort} · ${map.config.gamePort}` },
         { label: 'Slot priority', value: String(map.config.slotPriority) },
         { label: 'Auto-shutdown', value: map.config.autoShutdownEnabled },
         { label: 'Can be Home', value: map.config.canBeHome },

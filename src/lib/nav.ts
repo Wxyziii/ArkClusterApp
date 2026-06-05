@@ -12,6 +12,7 @@ export const nav: NavItem[] = [
   { href: '/resources', label: 'Resources', icon: '📊', group: 'Cluster' },
   { href: '/config', label: 'Config Editor', icon: '⚙️', group: 'Management' },
   { href: '/mods', label: 'Mods', icon: '🧩', group: 'Management' },
+  { href: '/maintenance', label: 'Maintenance', icon: '🛠️', group: 'Management' },
   { href: '/backups', label: 'Backups', icon: '💾', group: 'Management' },
   { href: '/logs', label: 'Activity / Logs', icon: '📜', group: 'Management' },
   { href: '/discord', label: 'Discord Bot', icon: '💬', group: 'Integrations' },

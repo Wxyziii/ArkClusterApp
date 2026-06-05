@@ -1,6 +1,9 @@
 <script lang="ts">
   import type { ConfigField } from '$lib/types';
   import StatusBadge from './StatusBadge.svelte';
+  import Toggle from './Toggle.svelte';
+  import Select from './Select.svelte';
+  import NumberInput from './NumberInput.svelte';
 
   let { field = $bindable() }: { field: ConfigField } = $props();
 
@@ -19,36 +22,15 @@
   <p class="mt-0.5 mb-2 font-mono text-[10px] text-[#5c5c5c]">{field.key}</p>
 
   {#if field.type === 'bool'}
-    <button
-      id="cfg-{field.key}"
-      onclick={() => (field.value = !field.value)}
-      class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors {field.value ? 'bg-[#3a3a3a]' : 'bg-[#2a2a2a]'}"
-      role="switch"
-      aria-checked={field.value as boolean}
-      aria-label="Toggle {field.label}"
-    >
-      <span class="inline-block h-4 w-4 transform rounded-full bg-[#ededed] transition-transform {field.value ? 'translate-x-6' : 'translate-x-1'}"></span>
-    </button>
-    <span class="ml-2 text-xs text-[#8c8c8c]">{field.value ? 'On' : 'Off'}</span>
+    <div class="flex items-center gap-2">
+      <Toggle id="cfg-{field.key}" bind:checked={field.value as boolean} label="Toggle {field.label}" />
+      <span class="text-xs text-[#8c8c8c]">{field.value ? 'On' : 'Off'}</span>
+    </div>
   {:else if field.type === 'enum'}
-    <select
-      id="cfg-{field.key}"
-      bind:value={field.value}
-      class="w-full rounded-lg border border-[#2a2a2a] bg-[#0a0a0a] px-2.5 py-1.5 text-sm text-[#ededed] outline-none focus:border-[#3a3a3a]"
-    >
-      {#each field.options ?? [] as opt (opt)}<option value={opt}>{opt}</option>{/each}
-    </select>
+    <Select id="cfg-{field.key}" bind:value={field.value as string} options={field.options ?? []} size="sm" />
   {:else}
     <div class="flex items-center gap-2">
-      <input
-        id="cfg-{field.key}"
-        type="number"
-        bind:value={field.value}
-        min={field.min}
-        max={field.max}
-        step={field.step}
-        class="w-full rounded-lg border bg-[#0a0a0a] px-2.5 py-1.5 font-mono text-sm text-[#ededed] outline-none focus:border-[#3a3a3a] {invalid ? 'border-[#b5544f]' : 'border-[#2a2a2a]'}"
-      />
+      <NumberInput id="cfg-{field.key}" bind:value={field.value as number} min={field.min} max={field.max} step={field.step} {invalid} class="w-full" />
       <span class="whitespace-nowrap text-[10px] text-[#5c5c5c]">{field.min}–{field.max}</span>
     </div>
   {/if}

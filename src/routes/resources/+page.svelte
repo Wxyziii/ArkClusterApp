@@ -45,11 +45,6 @@
   });
   let running = $derived(maps.filter((m) => m.ramMb > 0));
   let runningMaps = $derived(maps.filter((m) => m.state === 'Online' || m.state === 'Ready' || m.state === 'Starting').length);
-
-  // simple sparkline mock
-  function spark(seed: number): number[] {
-    return Array.from({ length: 16 }, (_, i) => 40 + Math.round(25 * Math.sin(i / 2 + seed) + (i * seed % 7)));
-  }
 </script>
 
 <PageHeader title="Resources" icon="📊" subtitle="Live system load and the resource governor policy">
@@ -80,21 +75,7 @@
   <ResourceCard label="Disk" icon="🗄️" pct={diskPct} detail="{resources.diskFreeGb} GB free" warn={80} danger={92} />
 </div>
 
-<div class="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-2">
-  <Card title="Trend (last 16 samples · fallback preview)" icon="📈">
-    {#each [{ n: 'RAM', s: spark(1), c: '#7c9a82' }, { n: 'CPU', s: spark(3), c: '#8aa1ae' }, { n: 'Swap', s: spark(5), c: '#bfa15e' }] as row (row.n)}
-      <div class="mb-3">
-        <div class="mb-1 flex justify-between text-xs"><span class="text-[#8c8c8c]">{row.n}</span><span class="tabular-nums" style="color:{row.c}">{row.s.at(-1)}%</span></div>
-        <svg viewBox="0 0 160 40" class="h-10 w-full" preserveAspectRatio="none">
-          <polyline
-            fill="none" stroke={row.c} stroke-width="1.5"
-            points={row.s.map((v, i) => `${(i / 15) * 160},${40 - (v / 100) * 40}`).join(' ')}
-          />
-        </svg>
-      </div>
-    {/each}
-  </Card>
-
+<div class="mt-5">
   <Card title="Per-ARK-process memory" icon="🧩">
     {#if running.length === 0}
       <p class="text-xs text-[#8c8c8c]">No ARK processes currently running.</p>
@@ -129,16 +110,4 @@
     { label: 'Prefer active-player maps', value: governor.policy.preferActivePlayerMaps },
     { label: 'Auto-restart Home', value: governor.policy.autoRestartHome }
   ]} />
-</div>
-
-<div class="mt-5">
-  <Card title="Decision explanations (human-readable)" icon="🗣️">
-    <ul class="space-y-2">
-      {#each governor.examples as ex (ex)}
-        <li class="flex items-start gap-2 rounded-lg bg-[#0a0a0a]/40 px-3 py-2 text-xs text-[#8c8c8c]">
-          <span class="mt-0.5 text-[#8aa1ae]">▸</span>{ex}
-        </li>
-      {/each}
-    </ul>
-  </Card>
 </div>
