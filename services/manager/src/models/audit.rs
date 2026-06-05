@@ -63,11 +63,20 @@ impl AuditEvent {
         self.actor = actor.into();
         self
     }
+
+    pub fn target(mut self, target: impl Into<String>) -> Self {
+        self.target_map = target.into();
+        self
+    }
 }
 
 /// Persist an audit event to SQLite. Errors are logged but not propagated —
 /// failing to write an audit row must never take down a request path.
 pub async fn record(pool: &SqlitePool, ev: &AuditEvent) {
+    let _ = record_with_id(pool, ev).await;
+}
+
+pub async fn record_with_id(pool: &SqlitePool, ev: &AuditEvent) -> Option<i64> {
     tracing::info!(
         severity = ev.severity.as_str(),
         source = %ev.source,
@@ -89,7 +98,11 @@ pub async fn record(pool: &SqlitePool, ev: &AuditEvent) {
     .execute(pool)
     .await;
 
-    if let Err(e) = res {
-        tracing::warn!("failed to persist audit event: {e}");
+    match res {
+        Ok(done) => Some(done.last_insert_rowid()),
+        Err(e) => {
+            tracing::warn!("failed to persist audit event: {e}");
+            None
+        }
     }
 }

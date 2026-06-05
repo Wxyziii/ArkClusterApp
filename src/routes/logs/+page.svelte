@@ -1,9 +1,20 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { PageHeader, Card, ActivityLogItem, StatusBadge, EmptyState } from '$lib/components';
-  import { activityLog } from '$lib/data/mock';
+  import { activityLog as mockActivity } from '$lib/data/mock';
+  import { api, loadWithFallback } from '$lib/api';
+  import type { LogEvent } from '$lib/types';
 
   const filters = ['All', 'Map', 'Travel', 'Governor', 'RCON', 'Discord', 'Config', 'Mod', 'Backup', 'User', 'Errors'];
   let active = $state('All');
+  let activityLog = $state<LogEvent[]>(mockActivity);
+  let source = $state('mock');
+
+  onMount(async () => {
+    const res = await loadWithFallback(() => api.activity(), { activity: mockActivity, recent: mockActivity.slice(0, 5) });
+    activityLog = res.data.activity;
+    source = res.fromFallback ? 'mock' : 'sqlite';
+  });
 
   let shown = $derived.by(() => {
     if (active === 'All') return activityLog;
@@ -13,7 +24,10 @@
 </script>
 
 <PageHeader title="Activity / Logs" icon="📜" subtitle="Cluster audit timeline — every automated and admin action">
-  {#snippet actions()}<StatusBadge label="{activityLog.length} events" tone="cyan" />{/snippet}
+  {#snippet actions()}
+    <StatusBadge label="{activityLog.length} events" tone="cyan" />
+    <StatusBadge label={source} tone={source === 'sqlite' ? 'green' : 'gray'} />
+  {/snippet}
 </PageHeader>
 
 <div class="mb-4 flex flex-wrap gap-1.5">

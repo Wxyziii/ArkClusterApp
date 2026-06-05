@@ -8,14 +8,17 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::json;
 
 use crate::config::{MapConfig, ServerSlot};
 use crate::mock;
+use crate::models::audit::{self, AuditEvent, Severity};
+use crate::models::backup;
 use crate::models::domain::{ArkMap, MapConfigSummary};
 use crate::models::governor;
+use crate::models::operations::{self, ActionRequest, GuardError, ServerAction, SystemdGuardInput};
 use crate::models::rcon::{RconEndpoint, RconListener};
 use crate::models::resources;
 use crate::models::systemd::UnitStatus;
@@ -24,12 +27,20 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/status", get(status))
+        .route("/capabilities", get(capabilities))
         .route("/servers", get(servers))
         .route("/servers/{id}", get(server_detail))
+        .route("/servers/{id}/actions/start", post(server_start))
+        .route("/servers/{id}/actions/stop", post(server_stop))
+        .route("/servers/{id}/actions/restart", post(server_restart))
+        .route("/servers/{id}/actions/backup", post(server_backup))
         .route("/travel", get(travel))
         .route("/resources", get(resources))
         .route("/backups", get(backups))
         .route("/activity", get(activity))
+        .route("/rcon/status", get(rcon_status))
+        .route("/players", get(players))
+        .route("/chat/recent", get(chat_recent))
         .route("/config", get(config))
         .route("/mods", get(mods))
         .route("/discord/status", get(discord_status))
@@ -114,6 +125,15 @@ async fn status(State(s): State<AppState>) -> impl IntoResponse {
     }))
 }
 
+async fn capabilities(State(s): State<AppState>) -> impl IntoResponse {
+    let source = if cfg!(target_os = "linux") {
+        "host"
+    } else {
+        "fallback"
+    };
+    Json(operations::capabilities(&s.config, source))
+}
+
 async fn servers(State(s): State<AppState>) -> impl IntoResponse {
     Json(maps_with_status(&s).await)
 }
@@ -129,9 +149,103 @@ async fn server_detail(State(s): State<AppState>, Path(id): Path<String>) -> imp
         }
         None => (
             StatusCode::NOT_FOUND,
-            Json(json!({ "error": "not_found", "message": format!("no server with id '{id}'") })),
+            Json(api_error_value(
+                "NOT_FOUND",
+                format!("no server with id '{id}'"),
+                json!({}),
+            )),
         )
             .into_response(),
+    }
+}
+
+async fn server_start(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ActionRequest>,
+) -> impl IntoResponse {
+    server_systemd_action(s, id, ServerAction::Start, req).await
+}
+
+async fn server_stop(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ActionRequest>,
+) -> impl IntoResponse {
+    server_systemd_action(s, id, ServerAction::Stop, req).await
+}
+
+async fn server_restart(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ActionRequest>,
+) -> impl IntoResponse {
+    server_systemd_action(s, id, ServerAction::Restart, req).await
+}
+
+async fn server_backup(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ActionRequest>,
+) -> impl IntoResponse {
+    let Some((slot, slot_key)) = configured_slot_for_request(&s.config, &id) else {
+        return api_error(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            "server/slot not found",
+            json!({}),
+        );
+    };
+    if let Err(err) = operations::guard_backup(&s.config, &req) {
+        return guard_error_response(err);
+    }
+
+    let audit_id = audit::record_with_id(
+        &s.pool,
+        &AuditEvent::new(Severity::Info, "Backup", "manual backup requested")
+            .target(&slot.map_key)
+            .detail(format!("slot={} reason={}", slot.id, req.reason)),
+    )
+    .await;
+    match backup::run_slot_backup(&s.pool, &s.config, slot_key, slot, &req.reason).await {
+        Ok(record) => {
+            audit::record(
+                &s.pool,
+                &AuditEvent::new(Severity::Success, "Backup", "backup completed")
+                    .target(&slot.map_key)
+                    .detail(format!(
+                        "backup_id={} size_bytes={}",
+                        record.id, record.size_bytes
+                    )),
+            )
+            .await;
+            Json(json!({
+                "accepted": true,
+                "actionId": record.id,
+                "serverId": id,
+                "operation": "backup",
+                "result": "success",
+                "message": "Backup completed.",
+                "auditEventId": audit_id,
+                "backup": record
+            }))
+            .into_response()
+        }
+        Err(err) => {
+            audit::record(
+                &s.pool,
+                &AuditEvent::new(Severity::Error, "Backup", "backup failed")
+                    .target(&slot.map_key)
+                    .detail(format!("slot={} error={}", slot.id, err)),
+            )
+            .await;
+            api_error(
+                status_for_error_code(err.code()),
+                err.code(),
+                err.to_string(),
+                json!({ "auditEventId": audit_id }),
+            )
+        }
     }
 }
 
@@ -200,21 +314,90 @@ async fn resources(State(s): State<AppState>) -> impl IntoResponse {
 
 async fn backups(State(s): State<AppState>) -> impl IntoResponse {
     let p = &s.config.backup_policy;
+    let records = backup::list(&s.pool).await.unwrap_or_default();
+    let backups = if records.is_empty() {
+        mock::backups()
+            .into_iter()
+            .map(|b| {
+                json!({
+                    "id": b.id,
+                    "map": b.map,
+                    "type": b.kind,
+                    "sizeMb": b.size_mb,
+                    "sizeBytes": b.size_mb as u64 * 1024 * 1024,
+                    "created": b.created,
+                    "createdAt": b.created,
+                    "completedAt": null,
+                    "reason": b.reason,
+                    "status": b.status,
+                    "path": "",
+                    "source": "mock",
+                    "error": b.error
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        records
+            .into_iter()
+            .map(|b| {
+                json!({
+                    "id": b.id,
+                    "map": b.map_key,
+                    "slotId": b.slot_id,
+                    "serverId": b.server_id,
+                    "type": b.kind,
+                    "sizeMb": ((b.size_bytes as f64 / 1024.0 / 1024.0).round() as u64),
+                    "sizeBytes": b.size_bytes,
+                    "created": b.created_at,
+                    "createdAt": b.created_at,
+                    "completedAt": b.completed_at,
+                    "reason": b.reason,
+                    "status": b.status,
+                    "path": b.path,
+                    "source": "sqlite",
+                    "error": b.error
+                })
+            })
+            .collect::<Vec<_>>()
+    };
     Json(json!({
-        "backups": mock::backups(),
+        "backups": backups,
         "policy": {
             "beforeShutdown": p.before_shutdown,
             "beforeConfigSave": p.before_config_save,
             "beforeModChange": p.before_mod_change,
-            "retention": p.retention
+            "retention": p.retention,
+            "enabled": s.config.operations.backup_enabled
         }
     }))
 }
 
-async fn activity() -> impl IntoResponse {
+async fn activity(State(s): State<AppState>) -> impl IntoResponse {
+    let real = real_activity(&s.pool).await.unwrap_or_default();
+    if !real.is_empty() {
+        let recent = real.iter().take(5).cloned().collect::<Vec<_>>();
+        return Json(json!({ "activity": real, "recent": recent, "source": "sqlite" }));
+    }
     Json(json!({
         "activity": mock::activity_log(),
-        "recent": mock::recent_activity()
+        "recent": mock::recent_activity(),
+        "source": "mock"
+    }))
+}
+
+async fn rcon_status(State(s): State<AppState>) -> impl IntoResponse {
+    Json(crate::models::rcon::status_from_config(&s.config))
+}
+
+async fn players() -> impl IntoResponse {
+    Json(json!({ "players": mock::players(), "source": "mock", "rconEnabled": false }))
+}
+
+async fn chat_recent(State(s): State<AppState>) -> impl IntoResponse {
+    Json(json!({
+        "messages": [],
+        "detectedCommands": [],
+        "source": if s.config.operations.rcon_enabled && s.config.rcon.enabled { "rcon_unavailable" } else { "disabled" }
     }))
 }
 
@@ -321,13 +504,15 @@ fn rcon_overview() -> RconListener {
     let endpoints = mock::maps()
         .iter()
         .map(|m| {
-            RconEndpoint::mock(
+            let mut endpoint = RconEndpoint::mock(
                 &m.id,
                 "127.0.0.1",
                 m.config.rcon_port,
                 m.rcon == "Connected",
                 m.players,
-            )
+            );
+            endpoint.last_error = Some("RCON disabled or mock-only".into());
+            endpoint
         })
         .collect();
     RconListener {
@@ -336,6 +521,290 @@ fn rcon_overview() -> RconListener {
         endpoints,
         implemented: false,
     }
+}
+
+async fn server_systemd_action(
+    s: AppState,
+    id: String,
+    action: ServerAction,
+    req: ActionRequest,
+) -> axum::response::Response {
+    let Some((slot, slot_key)) = configured_slot_for_request(&s.config, &id) else {
+        return api_error(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            "server/slot not found",
+            json!({}),
+        );
+    };
+    let maps = maps_with_status(&s).await;
+    let current_map = maps
+        .iter()
+        .find(|m| m.id == slot.map_key || m.config.systemd_unit == slot.systemd_unit);
+    let player_count = current_map.map(|m| m.players).unwrap_or(0);
+    let active_travel_slots = maps
+        .iter()
+        .filter(|m| !m.is_home && matches!(m.state.as_str(), "Online" | "Ready" | "Starting"))
+        .count();
+    let sample = resources::sample(&s.config.cluster.directory, s.manager_started_at).await;
+
+    if let Err(err) = operations::guard_systemd_action(SystemdGuardInput {
+        config: &s.config,
+        slot_key,
+        slot,
+        action,
+        req: &req,
+        sample: &sample,
+        active_travel_slots,
+        player_count,
+    }) {
+        audit::record(
+            &s.pool,
+            &AuditEvent::new(Severity::Warn, "Systemd", "systemd action blocked")
+                .target(&slot.map_key)
+                .detail(format!(
+                    "slot={} action={} code={} reason={}",
+                    slot.id,
+                    action.as_str(),
+                    err.code(),
+                    req.reason
+                )),
+        )
+        .await;
+        return guard_error_response(err);
+    }
+
+    let action_id = format!("op-{}-{}-{}", slot.id, action.as_str(), epoch_secs());
+    let severity = if slot_key == "home" && action == ServerAction::Stop {
+        Severity::Warn
+    } else {
+        Severity::Info
+    };
+    let audit_id = audit::record_with_id(
+        &s.pool,
+        &AuditEvent::new(severity, "Systemd", "systemd action requested")
+            .target(&slot.map_key)
+            .detail(format!(
+                "action_id={} slot={} action={} unit={} reason={}",
+                action_id,
+                slot.id,
+                action.as_str(),
+                slot.systemd_unit,
+                req.reason
+            )),
+    )
+    .await;
+
+    let result = match action {
+        ServerAction::Start => s.systemd.start_unit(&slot.systemd_unit).await,
+        ServerAction::Stop => s.systemd.stop_unit(&slot.systemd_unit).await,
+        ServerAction::Restart => s.systemd.restart_unit(&slot.systemd_unit).await,
+        ServerAction::Backup => unreachable!("backup handled separately"),
+    };
+
+    match result {
+        Ok(()) => {
+            let status = s
+                .systemd
+                .get_status(&slot.systemd_unit)
+                .await
+                .unwrap_or_else(|e| {
+                    UnitStatus::unavailable(&slot.systemd_unit, "systemd", e.to_string())
+                });
+            let _ = write_systemd_action(
+                &s.pool,
+                SystemdActionInsert {
+                    id: &action_id,
+                    server_id: &id,
+                    slot_id: &slot.id,
+                    unit: &slot.systemd_unit,
+                    operation: action.as_str(),
+                    reason: &req.reason,
+                    result: "success",
+                    message: "systemd action completed",
+                },
+            )
+            .await;
+            audit::record(
+                &s.pool,
+                &AuditEvent::new(Severity::Success, "Systemd", "systemd action completed")
+                    .target(&slot.map_key)
+                    .detail(format!("action_id={action_id}")),
+            )
+            .await;
+            Json(json!({
+                "accepted": true,
+                "actionId": action_id,
+                "serverId": id,
+                "operation": action.as_str(),
+                "result": "success",
+                "message": "Systemd action completed.",
+                "auditEventId": audit_id,
+                "updatedStatus": status
+            }))
+            .into_response()
+        }
+        Err(err) => {
+            let message = err.to_string();
+            let _ = write_systemd_action(
+                &s.pool,
+                SystemdActionInsert {
+                    id: &action_id,
+                    server_id: &id,
+                    slot_id: &slot.id,
+                    unit: &slot.systemd_unit,
+                    operation: action.as_str(),
+                    reason: &req.reason,
+                    result: "failed",
+                    message: &message,
+                },
+            )
+            .await;
+            audit::record(
+                &s.pool,
+                &AuditEvent::new(Severity::Error, "Systemd", "systemd action failed")
+                    .target(&slot.map_key)
+                    .detail(format!("action_id={action_id} error={message}")),
+            )
+            .await;
+            api_error(
+                StatusCode::BAD_GATEWAY,
+                "OPERATION_FAILED",
+                message,
+                json!({ "actionId": action_id, "auditEventId": audit_id }),
+            )
+        }
+    }
+}
+
+fn configured_slot_for_request<'a>(
+    config: &'a crate::config::Config,
+    id: &str,
+) -> Option<(&'a ServerSlot, &'static str)> {
+    let slots = config.slots.as_ref()?;
+    let normalized = id.replace('-', "_");
+    slots
+        .iter()
+        .into_iter()
+        .find(|(slot, key, _)| {
+            id == slot.id || id == slot.map_key || normalized == *key || id == key.replace('_', "-")
+        })
+        .map(|(slot, key, _)| (slot, key))
+}
+
+fn guard_error_response(err: GuardError) -> axum::response::Response {
+    api_error(
+        status_for_error_code(err.code()),
+        err.code(),
+        err.message(),
+        json!({}),
+    )
+}
+
+fn status_for_error_code(code: &str) -> StatusCode {
+    match code {
+        "NOT_FOUND" => StatusCode::NOT_FOUND,
+        "INVALID_CONFIRMATION" | "HOME_PROTECTED" | "PLAYERS_ONLINE" | "PATH_NOT_ALLOWED" => {
+            StatusCode::BAD_REQUEST
+        }
+        "CONTROL_DISABLED" | "BACKUP_DISABLED" | "RCON_DISABLED" => StatusCode::FORBIDDEN,
+        "RESOURCE_POLICY_BLOCKED" => StatusCode::CONFLICT,
+        "BACKUP_PATH_MISSING" | "UNIT_NOT_CONFIGURED" => StatusCode::SERVICE_UNAVAILABLE,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+fn api_error(
+    status: StatusCode,
+    code: &str,
+    message: impl Into<String>,
+    details: serde_json::Value,
+) -> axum::response::Response {
+    (status, Json(api_error_value(code, message, details))).into_response()
+}
+
+fn api_error_value(
+    code: &str,
+    message: impl Into<String>,
+    details: serde_json::Value,
+) -> serde_json::Value {
+    json!({ "error": { "code": code, "message": message.into(), "details": details } })
+}
+
+struct SystemdActionInsert<'a> {
+    id: &'a str,
+    server_id: &'a str,
+    slot_id: &'a str,
+    unit: &'a str,
+    operation: &'a str,
+    reason: &'a str,
+    result: &'a str,
+    message: &'a str,
+}
+
+async fn write_systemd_action(
+    pool: &sqlx::SqlitePool,
+    row: SystemdActionInsert<'_>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO systemd_actions (id, server_id, slot_id, unit, operation, reason, result, message) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )
+    .bind(row.id)
+    .bind(row.server_id)
+    .bind(row.slot_id)
+    .bind(row.unit)
+    .bind(row.operation)
+    .bind(row.reason)
+    .bind(row.result)
+    .bind(row.message)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn real_activity(pool: &sqlx::SqlitePool) -> Result<Vec<serde_json::Value>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, ActivityRow>(
+        "SELECT id, ts, severity, source, actor, target_map, message, detail \
+         FROM activity_log ORDER BY ts DESC, id DESC LIMIT 100",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            json!({
+                "id": format!("db-{}", r.id),
+                "ts": r.ts,
+                "severity": r.severity,
+                "source": r.source,
+                "actor": r.actor,
+                "targetMap": r.target_map,
+                "message": r.message,
+                "detail": r.detail,
+                "dataSource": "sqlite"
+            })
+        })
+        .collect())
+}
+
+#[derive(sqlx::FromRow)]
+struct ActivityRow {
+    id: i64,
+    ts: String,
+    severity: String,
+    source: String,
+    actor: String,
+    target_map: String,
+    message: String,
+    detail: String,
+}
+
+fn epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 async fn maps_with_status(s: &AppState) -> Vec<ArkMap> {

@@ -20,8 +20,14 @@ pub const API_TOKEN_ENV: &str = "ARK_MANAGER_API_TOKEN";
 pub struct Config {
     pub cluster: ClusterConfig,
     pub server: ServerConfig,
+    #[serde(default)]
+    pub operations: OperationsConfig,
+    #[serde(default)]
+    pub paths: PathsConfig,
     pub resource_policy: ResourcePolicy,
     pub backup_policy: BackupPolicy,
+    #[serde(default)]
+    pub rcon: RconConfig,
     pub discord: DiscordConfig,
     #[serde(default)]
     pub slots: Option<SlotsConfig>,
@@ -46,6 +52,45 @@ pub struct ServerConfig {
     pub port: u16,
     #[serde(default)]
     pub api_token: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OperationsConfig {
+    #[serde(default)]
+    pub systemd_control_enabled: bool,
+    #[serde(default = "default_true")]
+    pub backup_enabled: bool,
+    #[serde(default)]
+    pub rcon_enabled: bool,
+    #[serde(default)]
+    pub allow_home_manual_stop: bool,
+    #[serde(default = "default_true")]
+    pub allow_travel_manual_stop: bool,
+    #[serde(default = "default_true")]
+    pub require_confirmation_token: bool,
+}
+
+impl Default for OperationsConfig {
+    fn default() -> Self {
+        Self {
+            systemd_control_enabled: false,
+            backup_enabled: true,
+            rcon_enabled: false,
+            allow_home_manual_stop: false,
+            allow_travel_manual_stop: true,
+            require_confirmation_token: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PathsConfig {
+    #[serde(default)]
+    pub ark_root: String,
+    #[serde(default)]
+    pub backup_root: String,
+    #[serde(default)]
+    pub cluster_dir: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -81,6 +126,23 @@ pub struct DiscordConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct RconConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_rcon_poll")]
+    pub poll_interval_seconds: u32,
+}
+
+impl Default for RconConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            poll_interval_seconds: default_rcon_poll(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct TravelSlot {
     pub name: String,
     pub role: String, // "home" | "travel"
@@ -108,12 +170,31 @@ pub struct ServerSlot {
     pub save_path: Option<String>,
     #[serde(default)]
     pub config_path: Option<String>,
+    #[serde(default)]
+    pub paths: SlotPaths,
+    #[serde(default)]
+    pub rcon: Option<SlotRconConfig>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
     pub protected: bool,
     #[serde(default)]
     pub home_resource_standby_enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct SlotPaths {
+    #[serde(default)]
+    pub save_dir: Option<String>,
+    #[serde(default)]
+    pub config_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SlotRconConfig {
+    pub host: String,
+    pub port: u16,
+    pub password_env: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -142,6 +223,9 @@ pub struct MapConfig {
 
 fn default_true() -> bool {
     true
+}
+fn default_rcon_poll() -> u32 {
+    5
 }
 fn default_unassigned() -> String {
     "Unassigned".to_string()
@@ -215,6 +299,18 @@ impl Config {
         // --- safe paths ---
         validate_safe_path("cluster.directory", &self.cluster.directory)?;
         validate_safe_path("backup_policy.directory", &self.backup_policy.directory)?;
+        if !self.paths.ark_root.trim().is_empty() {
+            validate_safe_path("paths.ark_root", &self.paths.ark_root)?;
+        }
+        if !self.paths.backup_root.trim().is_empty() {
+            validate_safe_path("paths.backup_root", &self.paths.backup_root)?;
+        }
+        if !self.paths.cluster_dir.trim().is_empty() {
+            validate_safe_path("paths.cluster_dir", &self.paths.cluster_dir)?;
+        }
+        if self.rcon.poll_interval_seconds == 0 {
+            return Err(inv("rcon.poll_interval_seconds must be > 0".into()));
+        }
 
         // --- travel slots: exactly one home, travel count within policy ---
         let home_slots = self
@@ -378,14 +474,32 @@ impl Config {
             for (label, maybe_path) in [
                 ("save_path", slot.save_path.as_deref()),
                 ("config_path", slot.config_path.as_deref()),
+                ("paths.save_dir", slot.paths.save_dir.as_deref()),
+                ("paths.config_dir", slot.paths.config_dir.as_deref()),
             ] {
                 if let Some(path) = maybe_path {
                     validate_safe_path(&format!("slots.{key}.{label}"), path)?;
-                    validate_path_under_root(
-                        &format!("slots.{key}.{label}"),
-                        path,
-                        &self.cluster.directory,
-                    )?;
+                    let allowed_root = if self.paths.ark_root.trim().is_empty() {
+                        &self.cluster.directory
+                    } else {
+                        &self.paths.ark_root
+                    };
+                    validate_path_under_root(&format!("slots.{key}.{label}"), path, allowed_root)?;
+                }
+            }
+            if let Some(rcon) = &slot.rcon {
+                if rcon.host.trim().is_empty() {
+                    return Err(inv(format!("slots.{key}.rcon.host must not be empty")));
+                }
+                if rcon.password_env.trim().is_empty()
+                    || !rcon
+                        .password_env
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                {
+                    return Err(inv(format!(
+                        "slots.{key}.rcon.password_env must be an uppercase env var name"
+                    )));
                 }
             }
         }
@@ -427,6 +541,19 @@ impl SlotsConfig {
     }
 }
 
+impl ServerSlot {
+    pub fn save_dir(&self) -> Option<&str> {
+        self.paths.save_dir.as_deref().or(self.save_path.as_deref())
+    }
+
+    pub fn config_dir(&self) -> Option<&str> {
+        self.paths
+            .config_dir
+            .as_deref()
+            .or(self.config_path.as_deref())
+    }
+}
+
 /// Reject relative paths, empty paths, and any path containing a `..` segment.
 fn validate_safe_path(label: &str, path: &str) -> Result<(), ConfigError> {
     if path.trim().is_empty() {
@@ -463,10 +590,10 @@ fn validate_path_under_root(label: &str, path: &str, root: &str) -> Result<(), C
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests_support {
     use super::*;
 
-    fn base() -> Config {
+    pub fn base_config() -> Config {
         Config {
             cluster: ClusterConfig {
                 name: "c".into(),
@@ -478,6 +605,12 @@ mod tests {
                 bind_address: "127.0.0.1".into(),
                 port: 8787,
                 api_token: "tok".into(),
+            },
+            operations: OperationsConfig::default(),
+            paths: PathsConfig {
+                ark_root: "/srv/ark".into(),
+                backup_root: "/srv/ark/backups".into(),
+                cluster_dir: "/srv/ark/clusters/main".into(),
             },
             resource_policy: ResourcePolicy {
                 ram_warn_pct: 70,
@@ -498,6 +631,7 @@ mod tests {
                 retention: "r".into(),
                 directory: "/srv/ark/backups".into(),
             },
+            rcon: RconConfig::default(),
             discord: DiscordConfig {
                 enabled: false,
                 guild: "g".into(),
@@ -515,6 +649,12 @@ mod tests {
                     rcon_port: 27020,
                     save_path: Some("/srv/ark/home/Saved".into()),
                     config_path: Some("/srv/ark/home/Saved/Config/LinuxServer".into()),
+                    paths: SlotPaths::default(),
+                    rcon: Some(SlotRconConfig {
+                        host: "127.0.0.1".into(),
+                        port: 27020,
+                        password_env: "ARK_HOME_RCON_PASSWORD".into(),
+                    }),
                     enabled: true,
                     protected: true,
                     home_resource_standby_enabled: true,
@@ -529,6 +669,8 @@ mod tests {
                     rcon_port: 27022,
                     save_path: None,
                     config_path: None,
+                    paths: SlotPaths::default(),
+                    rcon: None,
                     enabled: true,
                     protected: false,
                     home_resource_standby_enabled: false,
@@ -543,6 +685,8 @@ mod tests {
                     rcon_port: 27024,
                     save_path: None,
                     config_path: None,
+                    paths: SlotPaths::default(),
+                    rcon: None,
                     enabled: true,
                     protected: false,
                     home_resource_standby_enabled: false,
@@ -598,6 +742,15 @@ mod tests {
             ],
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base() -> Config {
+        tests_support::base_config()
+    }
 
     #[test]
     fn valid_config_passes() {
@@ -636,6 +789,28 @@ mod tests {
     fn slot_paths_must_stay_under_cluster_dir() {
         let mut c = base();
         c.slots.as_mut().unwrap().home.save_path = Some("/etc/ark".into());
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn nested_slot_paths_must_stay_under_ark_root() {
+        let mut c = base();
+        c.slots.as_mut().unwrap().home.save_path = None;
+        c.slots.as_mut().unwrap().home.paths.save_dir = Some("/tmp/ark".into());
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn bad_rcon_password_env_rejected() {
+        let mut c = base();
+        c.slots
+            .as_mut()
+            .unwrap()
+            .home
+            .rcon
+            .as_mut()
+            .unwrap()
+            .password_env = "bad-name".into();
         assert!(c.validate().is_err());
     }
 

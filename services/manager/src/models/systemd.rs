@@ -82,14 +82,22 @@ pub enum SystemdError {
     NotImplemented(String),
     #[error("unsafe systemd unit name rejected: {0}")]
     UnsafeUnitName(String),
+    #[error("systemctl {action} failed for {unit}: {message}")]
+    CommandFailed {
+        action: String,
+        unit: String,
+        message: String,
+    },
+    #[error("systemctl {action} timed out for {unit}")]
+    Timeout { action: String, unit: String },
 }
 
 #[async_trait]
 pub trait SystemdController: Send + Sync {
     async fn get_status(&self, unit: &str) -> Result<UnitStatus, SystemdError>;
-    fn start_unit(&self, unit: &str) -> Result<(), SystemdError>;
-    fn stop_unit(&self, unit: &str) -> Result<(), SystemdError>;
-    fn restart_unit(&self, unit: &str) -> Result<(), SystemdError>;
+    async fn start_unit(&self, unit: &str) -> Result<(), SystemdError>;
+    async fn stop_unit(&self, unit: &str) -> Result<(), SystemdError>;
+    async fn restart_unit(&self, unit: &str) -> Result<(), SystemdError>;
 }
 
 #[derive(Debug, Default, Clone)]
@@ -157,14 +165,14 @@ impl SystemdController for RealSystemd {
         }
     }
 
-    fn start_unit(&self, unit: &str) -> Result<(), SystemdError> {
-        Err(SystemdError::NotImplemented(unit.to_string()))
+    async fn start_unit(&self, unit: &str) -> Result<(), SystemdError> {
+        run_systemctl_action("start", unit).await
     }
-    fn stop_unit(&self, unit: &str) -> Result<(), SystemdError> {
-        Err(SystemdError::NotImplemented(unit.to_string()))
+    async fn stop_unit(&self, unit: &str) -> Result<(), SystemdError> {
+        run_systemctl_action("stop", unit).await
     }
-    fn restart_unit(&self, unit: &str) -> Result<(), SystemdError> {
-        Err(SystemdError::NotImplemented(unit.to_string()))
+    async fn restart_unit(&self, unit: &str) -> Result<(), SystemdError> {
+        run_systemctl_action("restart", unit).await
     }
 }
 
@@ -197,14 +205,60 @@ impl SystemdController for MockSystemd {
         })
     }
 
-    fn start_unit(&self, unit: &str) -> Result<(), SystemdError> {
+    async fn start_unit(&self, unit: &str) -> Result<(), SystemdError> {
         Err(SystemdError::NotImplemented(unit.to_string()))
     }
-    fn stop_unit(&self, unit: &str) -> Result<(), SystemdError> {
+    async fn stop_unit(&self, unit: &str) -> Result<(), SystemdError> {
         Err(SystemdError::NotImplemented(unit.to_string()))
     }
-    fn restart_unit(&self, unit: &str) -> Result<(), SystemdError> {
+    async fn restart_unit(&self, unit: &str) -> Result<(), SystemdError> {
         Err(SystemdError::NotImplemented(unit.to_string()))
+    }
+}
+
+async fn run_systemctl_action(action: &str, unit: &str) -> Result<(), SystemdError> {
+    if !is_safe_unit_name(unit) {
+        return Err(SystemdError::UnsafeUnitName(unit.to_string()));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = action;
+        Err(SystemdError::NotImplemented(unit.to_string()))
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let output = time::timeout(
+            Duration::from_secs(20),
+            Command::new("systemctl").args([action, unit]).output(),
+        )
+        .await;
+
+        match output {
+            Ok(Ok(out)) if out.status.success() => Ok(()),
+            Ok(Ok(out)) => {
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                Err(SystemdError::CommandFailed {
+                    action: action.into(),
+                    unit: unit.into(),
+                    message: if stderr.is_empty() {
+                        format!("systemctl exited with {}", out.status)
+                    } else {
+                        stderr
+                    },
+                })
+            }
+            Ok(Err(e)) => Err(SystemdError::CommandFailed {
+                action: action.into(),
+                unit: unit.into(),
+                message: format!("failed to execute systemctl: {e}"),
+            }),
+            Err(_) => Err(SystemdError::Timeout {
+                action: action.into(),
+                unit: unit.into(),
+            }),
+        }
     }
 }
 

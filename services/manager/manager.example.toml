@@ -25,6 +25,21 @@ port = 8787
 # Leave empty here and set ARK_MANAGER_API_TOKEN in the environment instead.
 api_token = "change-me-dev-token"
 
+[operations]
+# Disabled by default. Enable only on the real private host after reviewing
+# configured units and Home protection rules.
+systemd_control_enabled = false
+backup_enabled = true
+rcon_enabled = false
+allow_home_manual_stop = false
+allow_travel_manual_stop = true
+require_confirmation_token = true
+
+[paths]
+ark_root = "/srv/ark"
+backup_root = "/var/lib/ark-cluster-manager/backups"
+cluster_dir = "/srv/ark/clusters/main"
+
 [resource_policy]
 ram_warn_pct = 70
 ram_pressure_pct = 82
@@ -52,6 +67,10 @@ guild = "Apex Survivors"
 status_channel = "#ark-status"
 # Real token must come from env later; never store it in committed config.
 bot_token_env = "ARK_MANAGER_DISCORD_TOKEN"
+
+[rcon]
+enabled = false
+poll_interval_seconds = 5
 
 # Travel slots. Exactly one slot must have role = "home". The number of slots
 # with role = "travel" must not exceed resource_policy.max_travel_servers.
@@ -84,6 +103,15 @@ enabled = true
 protected = true
 home_resource_standby_enabled = true
 
+[slots.home.paths]
+save_dir = "/srv/ark/instances/home/ShooterGame/Saved"
+config_dir = "/srv/ark/instances/home/ShooterGame/Saved/Config/LinuxServer"
+
+[slots.home.rcon]
+host = "127.0.0.1"
+port = 27020
+password_env = "ARK_HOME_RCON_PASSWORD"
+
 [slots.travel_a]
 id = "travel-a"
 label = "Travel A"
@@ -96,6 +124,15 @@ enabled = true
 protected = false
 home_resource_standby_enabled = false
 
+[slots.travel_a.paths]
+save_dir = "/srv/ark/instances/travel-a/ShooterGame/Saved"
+config_dir = "/srv/ark/instances/travel-a/ShooterGame/Saved/Config/LinuxServer"
+
+[slots.travel_a.rcon]
+host = "127.0.0.1"
+port = 27021
+password_env = "ARK_TRAVEL_A_RCON_PASSWORD"
+
 [slots.travel_b]
 id = "travel-b"
 label = "Travel B"
@@ -107,6 +144,15 @@ rcon_port = 27022
 enabled = true
 protected = false
 home_resource_standby_enabled = false
+
+[slots.travel_b.paths]
+save_dir = "/srv/ark/instances/travel-b/ShooterGame/Saved"
+config_dir = "/srv/ark/instances/travel-b/ShooterGame/Saved/Config/LinuxServer"
+
+[slots.travel_b.rcon]
+host = "127.0.0.1"
+port = 27022
+password_env = "ARK_TRAVEL_B_RCON_PASSWORD"
 
 # Configured maps. Keys (id) must be unique. Each query/rcon/game port must be
 # unique across all maps. Exactly one map should be can_be_home + assigned Home,

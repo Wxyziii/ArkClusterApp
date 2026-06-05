@@ -7,7 +7,7 @@
   } from '$lib/components';
   import * as mock from '$lib/data/mock';
   import { thresholds } from '$lib/data/mock';
-  import { api, loadWithFallback, type ClusterStatus } from '$lib/api';
+  import { api, loadWithFallback, type Capabilities, type ClusterStatus } from '$lib/api';
   import type { ArkMap, Backup, LogEvent, ResourceSample, TravelRequest, Tone } from '$lib/types';
 
   // All state defaults to mock so the page renders instantly and survives a
@@ -18,24 +18,27 @@
   let backups = $state<Backup[]>(mock.backups);
   let activeTravel = $state<TravelRequest>(mock.activeTravel);
   let status = $state<ClusterStatus | null>(null);
+  let capabilities = $state<Capabilities | null>(null);
   let fromFallback = $state(false);
   let loadError = $state<string | null>(null);
 
   onMount(async () => {
-    const [srv, rsrc, act, bk, st] = await Promise.all([
+    const [srv, rsrc, act, bk, st, caps] = await Promise.all([
       loadWithFallback(() => api.servers(), mock.maps),
       loadWithFallback(() => api.resources(), null),
       loadWithFallback(() => api.activity(), null),
       loadWithFallback(() => api.backups(), null),
-      loadWithFallback(() => api.status(), null)
+      loadWithFallback(() => api.status(), null),
+      loadWithFallback(() => api.capabilities(), null)
     ]);
     maps = srv.data;
     if (rsrc.data) resources = rsrc.data.sample;
     if (act.data) recentActivity = act.data.recent;
     if (bk.data) backups = bk.data.backups;
     if (st.data) status = st.data;
+    if (caps.data) capabilities = caps.data;
     // Any failed call means we are (at least partly) on fallback data.
-    fromFallback = [srv, rsrc, act, bk, st].some((r) => r.fromFallback);
+    fromFallback = [srv, rsrc, act, bk, st, caps].some((r) => r.fromFallback);
     loadError = srv.error ?? rsrc.error ?? st.error;
   });
 
@@ -71,6 +74,12 @@
     { label: 'Tailscale', value: status?.tailscale.status ?? 'Connected', tone: (status?.tailscale.tone ?? 'cyan') as Tone },
     { label: 'Discord Bot', value: status?.discord.status ?? 'Online', tone: (status?.discord.tone ?? 'green') as Tone }
   ]);
+
+  let capabilityStatus = $derived([
+    { label: 'Systemd control', value: capabilities?.systemdControl.enabled ? 'Enabled' : 'Disabled', tone: (capabilities?.systemdControl.enabled ? 'amber' : 'gray') as Tone },
+    { label: 'Backups', value: capabilities?.backup.enabled ? 'Enabled' : 'Disabled', tone: (capabilities?.backup.enabled ? 'green' : 'gray') as Tone },
+    { label: 'RCON', value: capabilities?.rcon.enabled ? 'Enabled' : 'Disabled', tone: (capabilities?.rcon.enabled ? 'cyan' : 'gray') as Tone }
+  ]);
 </script>
 
 <PageHeader title="Dashboard" icon="🛰️" subtitle="At-a-glance health of the smart ARK cluster">
@@ -85,6 +94,7 @@
   connected={!fromFallback && !!status}
   dataSource={status?.resourcePressure.source ?? resources.source}
   systemdStatus={status?.systemd.status ?? null}
+  capabilities={capabilities}
 />
 
 <!-- top status strip -->
@@ -102,6 +112,15 @@
     <div class="card-elevated flex flex-col justify-center p-4">
       <p class="text-xs text-[#8c8c8c]">{s.label}</p>
       <div class="mt-1.5"><StatusBadge label={s.value} tone={s.tone} dot pulse={s.tone !== 'cyan'} /></div>
+    </div>
+  {/each}
+</div>
+
+<div class="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+  {#each capabilityStatus as c (c.label)}
+    <div class="card-elevated p-3">
+      <p class="text-xs text-[#8c8c8c]">{c.label}</p>
+      <div class="mt-1"><StatusBadge label={c.value} tone={c.tone} size="sm" /></div>
     </div>
   {/each}
 </div>

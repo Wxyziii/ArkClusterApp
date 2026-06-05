@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { PageHeader, Card, MapCard, StatusBadge, ConfirmActionDialog, EmptyState, Button, SafetyWarningPanel, LoadingState, BackendStatusBanner } from '$lib/components';
   import { maps as mockMaps } from '$lib/data/mock';
-  import { api, loadWithFallback } from '$lib/api';
+  import { api, loadWithFallback, type Capabilities } from '$lib/api';
   import type { ArkMap } from '$lib/types';
 
   let view = $state<'cards' | 'table'>('cards');
@@ -11,30 +11,54 @@
 
   // Live data with mock fallback so the page works with the backend down.
   let maps = $state<ArkMap[]>(mockMaps);
+  let capabilities = $state<Capabilities | null>(null);
   let loading = $state(true);
   let fromFallback = $state(false);
   let loadError = $state<string | null>(null);
+  let actionMessage = $state<string | null>(null);
+  let actionError = $state<string | null>(null);
 
   onMount(async () => {
-    const res = await loadWithFallback(() => api.servers(), mockMaps);
+    const [res, caps] = await Promise.all([
+      loadWithFallback(() => api.servers(), mockMaps),
+      loadWithFallback(() => api.capabilities(), null)
+    ]);
     maps = res.data;
-    fromFallback = res.fromFallback;
-    loadError = res.error;
+    if (caps.data) capabilities = caps.data;
+    fromFallback = res.fromFallback || caps.fromFallback;
+    loadError = res.error ?? caps.error;
     loading = false;
   });
 
   let travelMaps = $derived(maps.filter((m) => m.assignment === 'Travel A' || m.assignment === 'Travel B'));
 
   function handle(action: string, map: ArkMap) {
-    if (action === 'start' || action === 'backup') {
-      // non-destructive — fire immediately (mock)
-      return;
-    }
     pending = { action, map };
     dialogOpen = true;
   }
 
   let isHomeStop = $derived(pending?.action === 'stop' && pending?.map.isHome);
+  let isHomeRestart = $derived(pending?.action === 'restart' && pending?.map.isHome);
+  let confirmPhrase = $derived(isHomeStop ? 'STOP HOME' : isHomeRestart ? 'RESTART HOME' : undefined);
+
+  async function runPending() {
+    if (!pending) return;
+    actionMessage = null;
+    actionError = null;
+    try {
+      const reason = isHomeStop ? 'manual_admin_override' : 'manual_admin_action';
+      const result = await api.serverAction(pending.map.id, pending.action as 'start' | 'stop' | 'restart' | 'backup', {
+        confirm: true,
+        strongConfirm: isHomeStop || isHomeRestart,
+        adminOverride: false,
+        reason
+      });
+      actionMessage = result.message;
+      maps = await api.servers();
+    } catch (e) {
+      actionError = e instanceof Error ? e.message : 'action failed';
+    }
+  }
 </script>
 
 <PageHeader title="Maps" icon="🗺️" subtitle="All configured ARK maps, roles, slots and live state">
@@ -50,9 +74,16 @@
 
 <div class="mb-5">
   <SafetyWarningPanel tone="warn" title="Read-only status">
-    Control disabled in this phase. The manager reads configured unit status only; Start, Stop, Restart, RCON, and backup actions are not implemented.
+    Controls are capability-gated. Systemd actions use configured units only; backup uses configured safe paths only.
   </SafetyWarningPanel>
 </div>
+
+{#if actionMessage}
+  <div class="mb-5"><SafetyWarningPanel tone="info" title="Action complete">{actionMessage}</SafetyWarningPanel></div>
+{/if}
+{#if actionError}
+  <div class="mb-5"><SafetyWarningPanel tone="danger" title="Action blocked or failed">{actionError}</SafetyWarningPanel></div>
+{/if}
 
 {#if loading}
   <LoadingState label="Loading maps from manager…" rows={4} />
@@ -63,7 +94,7 @@
 
 {#if view === 'cards'}
   <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-    {#each maps as map (map.id)}<MapCard {map} onaction={handle} />{/each}
+    {#each maps as map (map.id)}<MapCard {map} {capabilities} onaction={handle} />{/each}
   </div>
 {:else}
   <Card pad={false}>
@@ -105,18 +136,21 @@
   bind:open={dialogOpen}
   title="{pending?.action === 'stop' ? 'Stop' : 'Restart'} {pending?.map.name}?"
   tone={isHomeStop ? 'danger' : 'warn'}
-  confirmLabel="{pending?.action === 'stop' ? 'Stop' : 'Restart'} map"
-  requirePhrase={isHomeStop ? 'STOP HOME' : undefined}
+  confirmLabel="{pending?.action === 'backup' ? 'Back up' : pending?.action === 'start' ? 'Start' : pending?.action === 'stop' ? 'Stop' : 'Restart'} map"
+  requirePhrase={confirmPhrase}
+  onconfirm={runPending}
 >
   {#snippet body()}
     {#if isHomeStop}
       <SafetyWarningPanel tone="danger" title="This is the protected Home map">
-        Home should normally stay online. Stopping it manually triggers a save + backup, then a full shutdown. Home is meant to leave only via <strong>Resource Standby</strong> (empty + resource pressure). It will auto-restart when resources recover or when requested.
+        Home stop is blocked unless the backend config explicitly allows it and this request uses a strong admin override reason.
       </SafetyWarningPanel>
+    {:else if pending?.action === 'backup'}
+      <p>Create a real backup from configured safe paths only for <strong>{pending.map.name}</strong>. Restore/delete remain disabled.</p>
     {:else if pending?.map.players}
       <p>⚠️ <strong>{pending.map.players} player(s)</strong> are connected to {pending.map.name}. They will be disconnected. A save + backup runs first.</p>
     {:else}
-      <p>This runs a save + backup, then {pending?.action === 'stop' ? 'stops' : 'restarts'} <strong>{pending?.map.name}</strong> via <code class="font-mono text-[#8aa1ae]">{pending?.map.config.systemdUnit}</code>.</p>
+      <p>This requests <strong>{pending?.action}</strong> for <strong>{pending?.map.name}</strong> via configured unit <code class="font-mono text-[#8aa1ae]">{pending?.map.config.systemdUnit}</code>.</p>
     {/if}
   {/snippet}
 </ConfirmActionDialog>

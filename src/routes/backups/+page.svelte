@@ -1,13 +1,30 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { PageHeader, Card, BackupTable, Button, StatusBadge, ConfirmActionDialog, SafetyWarningPanel, PolicyCard } from '$lib/components';
-  import { backups, backupPolicy } from '$lib/data/mock';
+  import * as mock from '$lib/data/mock';
+  import { api, loadWithFallback, type Capabilities } from '$lib/api';
   import type { Backup } from '$lib/types';
 
   let confirmOpen = $state(false);
   let pending = $state<{ action: string; backup: Backup } | null>(null);
+  let backups = $state<Backup[]>(mock.backups);
+  let backupPolicy = $state<Record<string, unknown>>(mock.backupPolicy);
+  let capabilities = $state<Capabilities | null>(null);
+  let fromFallback = $state(false);
 
   let filter = $state<'all' | 'success' | 'running' | 'failed'>('all');
   let shown = $derived(filter === 'all' ? backups : backups.filter((b) => b.status === filter));
+
+  onMount(async () => {
+    const [bk, caps] = await Promise.all([
+      loadWithFallback(() => api.backups(), { backups: mock.backups, policy: mock.backupPolicy }),
+      loadWithFallback(() => api.capabilities(), null)
+    ]);
+    backups = bk.data.backups;
+    backupPolicy = bk.data.policy;
+    if (caps.data) capabilities = caps.data;
+    fromFallback = bk.fromFallback || caps.fromFallback;
+  });
 
   function handle(action: string, backup: Backup) {
     if (action === 'restore' || action === 'delete') {
@@ -19,8 +36,18 @@
 </script>
 
 <PageHeader title="Backups" icon="💾" subtitle="Save, config, mod and cluster-data backups">
-  {#snippet actions()}<Button variant="primary" size="sm">Backup now</Button>{/snippet}
+  {#snippet actions()}<Button variant="primary" size="sm" disabled title="Use a map card/detail action to back up a configured slot">Backup now</Button>{/snippet}
 </PageHeader>
+
+{#if fromFallback}
+  <div class="mb-5"><SafetyWarningPanel tone="warn" title="Showing fallback backups">Backend backup records are unavailable.</SafetyWarningPanel></div>
+{/if}
+
+<div class="mb-5">
+  <SafetyWarningPanel tone={capabilities?.backup.enabled ? 'info' : 'warn'} title="Backup capability">
+    {capabilities?.backup.reason ?? 'Loading backup capability.'} Restore and delete remain disabled.
+  </SafetyWarningPanel>
+</div>
 
 <div class="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
   {#each [{ l: 'Total', v: backups.length, t: 'cyan' }, { l: 'Success', v: backups.filter((b) => b.status === 'success').length, t: 'green' }, { l: 'Running', v: backups.filter((b) => b.status === 'running' || b.status === 'verifying').length, t: 'amber' }, { l: 'Failed', v: backups.filter((b) => b.status === 'failed').length, t: 'red' }] as s (s.l)}
@@ -47,10 +74,11 @@
   </div>
 
   <PolicyCard title="Backup policy" icon="🛡️" rows={[
-    { label: 'Before shutdown', value: backupPolicy.beforeShutdown },
-    { label: 'Before config save', value: backupPolicy.beforeConfigSave },
-    { label: 'Before mod changes', value: backupPolicy.beforeModChange },
-    { label: 'Retention', value: backupPolicy.retention }
+    { label: 'Before shutdown', value: String(backupPolicy.beforeShutdown ?? '') },
+    { label: 'Before config save', value: String(backupPolicy.beforeConfigSave ?? '') },
+    { label: 'Before mod changes', value: String(backupPolicy.beforeModChange ?? '') },
+    { label: 'Retention', value: String(backupPolicy.retention ?? '') },
+    { label: 'Real backup execution', value: !!capabilities?.backup.enabled }
   ]} />
 </div>
 

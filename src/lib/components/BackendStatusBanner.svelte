@@ -1,14 +1,18 @@
 <script lang="ts">
+  import type { Capabilities } from '$lib/api';
+
   let {
     error = null,
     connected = false,
     dataSource = null,
-    systemdStatus = null
+    systemdStatus = null,
+    capabilities = null
   }: {
     error?: string | null;
     connected?: boolean;
     dataSource?: string | null;
     systemdStatus?: string | null;
+    capabilities?: Capabilities | null;
   } = $props();
 </script>
 
@@ -24,6 +28,11 @@
     <span class="text-[10px] text-[#8c8c8c]">Auth: Bearer token accepted.</span>
     {#if dataSource}<span class="text-[10px] text-[#8c8c8c]">Data source: {dataSource}.</span>{/if}
     {#if systemdStatus}<span class="text-[10px] text-[#8c8c8c]">systemd: {systemdStatus}.</span>{/if}
+    {#if capabilities}
+      <span class="text-[10px] text-[#8c8c8c]">
+        ops: systemd {capabilities.systemdControl.enabled ? 'on' : 'off'}, backups {capabilities.backup.enabled ? 'on' : 'off'}, RCON {capabilities.rcon.enabled ? 'on' : 'off'}.
+      </span>
+    {/if}
   {:else}
     <span class="font-medium">Showing mock data — backend unavailable.</span>
     {#if error}<span class="font-mono text-[10px] text-[#8c8c8c]">({error})</span>{/if}

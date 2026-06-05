@@ -102,6 +102,64 @@ Expected results: `/health` is public, `/api/*` requires Bearer auth,
 reports read-only systemd state for configured units. ARK units may show
 inactive/not-found until real ARK services exist.
 
+## T1.2 Guarded Operations
+T1.2 adds the foundation for real operations while keeping the default deployed
+posture conservative.
+
+Capability flags live in `manager.toml`:
+```toml
+[operations]
+systemd_control_enabled = false
+backup_enabled = true
+rcon_enabled = false
+allow_home_manual_stop = false
+allow_travel_manual_stop = true
+require_confirmation_token = true
+```
+
+`GET /api/capabilities` tells the UI what is enabled and why something is
+disabled. The example config keeps systemd control and RCON disabled. Enabling
+systemd control should only happen on the private Ubuntu host after reviewing
+the configured slot units.
+
+Manual lifecycle actions are available only through configured server/slot IDs:
+```text
+POST /api/servers/:id/actions/start
+POST /api/servers/:id/actions/stop
+POST /api/servers/:id/actions/restart
+```
+The client never sends raw unit names. The backend resolves `:id` to configured
+Home / Travel A / Travel B units, validates the unit name, uses `systemctl`
+directly with fixed arguments, and writes audit rows for allowed and blocked
+attempts. Stop/restart require confirmation. Home stop is blocked unless
+`allow_home_manual_stop = true`, a strong confirmation is provided, and the
+reason is `manual_admin_override` or `resource_standby_preparation`.
+
+Manual backups use configured paths only:
+```text
+POST /api/servers/:id/actions/backup
+```
+Backup sources must be configured under the allowed ARK root, and destinations
+must remain under the backup root. The first implementation creates a
+timestamped directory copy for configured save/config paths. Missing source
+paths produce a clear failed backup record instead of crashing. Restore/delete
+remain disabled.
+
+RCON setup is read-only groundwork:
+```toml
+[rcon]
+enabled = false
+poll_interval_seconds = 5
+
+[slots.home.rcon]
+host = "127.0.0.1"
+port = 27020
+password_env = "ARK_HOME_RCON_PASSWORD"
+```
+Passwords must come from environment variables and are never returned or logged.
+T1.2 exposes disabled/unconfigured status and dry-run chat command parsing
+helpers, but does not execute `!travel` or any RCON write/control command.
+
 ### API endpoints (T1.1, read-only)
 `GET /health` is public. **Everything under `/api/*` requires
 `Authorization: Bearer <token>`** and returns `401` otherwise.
@@ -110,12 +168,20 @@ inactive/not-found until real ARK services exist.
 |----------|---------|
 | `GET /health` | liveness (no auth) |
 | `GET /api/status` | cluster/manager/Tailscale/Discord placeholders + real/fallback resource pressure + systemd availability summary |
+| `GET /api/capabilities` | guarded operation capability flags and disabled reasons |
 | `GET /api/servers` | configured maps/slots with real/fallback read-only systemd status; players/RCON/restart flags remain mock |
 | `GET /api/servers/:id` | one map + players + detailed read-only systemd status (404 if unknown) |
+| `POST /api/servers/:id/actions/start` | guarded configured-unit systemd start |
+| `POST /api/servers/:id/actions/stop` | guarded configured-unit systemd stop |
+| `POST /api/servers/:id/actions/restart` | guarded configured-unit systemd restart |
+| `POST /api/servers/:id/actions/backup` | safe configured-path backup |
 | `GET /api/travel` | travel slots, active request, stepper, block reason (mock) |
 | `GET /api/resources` | real Linux or fallback RAM/CPU/load/swap/disk/uptime + governor decision preview + thresholds |
-| `GET /api/backups` | backup history + policy (mock) |
-| `GET /api/activity` | audit/activity log (mock) |
+| `GET /api/backups` | SQLite backup history first, mock fallback if empty |
+| `GET /api/activity` | SQLite audit/activity log first, mock fallback if empty |
+| `GET /api/rcon/status` | read-only RCON configuration/status surface |
+| `GET /api/players` | player list, RCON-backed when available, mock otherwise |
+| `GET /api/chat/recent` | recent chat/detected command placeholder |
 | `GET /api/config` | editable config fields + raw `Game.ini`/`GameUserSettings.ini` (mock, read-only) |
 | `GET /api/mods` | installed/active/disabled mods + load order (mock, read-only) |
 | `GET /api/discord/status` | bot status, command list, recent events (mock) |
@@ -206,7 +272,7 @@ services/manager/
    └─ models/     # domain + audit + governor + systemd + rcon models
 ```
 
-## What is real now (T1.1)
+## What is real now (T1.2)
 - Linux host resource readings from `/proc/meminfo`, `/proc/stat`,
   `/proc/loadavg`, `/proc/uptime`, and read-only filesystem stats.
 - Resource API source markers: `host`, `mock`, or `fallback`.
@@ -215,16 +281,24 @@ services/manager/
   messages when systemd is unavailable.
 - Config-driven Home, Travel A, and Travel B slot/unit/port mapping.
 - Bearer-token auth for `/api/*`; `/health` remains public.
+- T1.2 operation capability flags exposed to the UI.
+- Guarded systemd action endpoints for configured units only. They are disabled
+  unless `operations.systemd_control_enabled = true`.
+- Manual backup endpoint for configured save/config paths, with SQLite backup
+  records and missing-path failure records.
+- SQLite-backed activity feed when audit rows exist.
+- RCON read-only status/config groundwork with no password exposure.
 
 ## Still mock or not implemented
-- ARK start/stop/restart control remains disabled and not routed.
-- RCON sockets, player counts, and in-game commands remain mock/placeholders.
+- ARK start/stop/restart remains disabled in the example/deployed config unless
+  deliberately enabled by the operator.
+- Automatic `!travel` scheduling and Home Resource Standby execution are not implemented.
+- RCON live sockets/player polling/chat polling remain disabled/placeholders
+  unless configured later.
 - Discord bot execution remains disabled/placeholder.
 - Config file writes and raw config editing remain preview-only.
 - Mod downloads, deletes, updates, and load-order mutation remain mock.
-- Backups are displayed from mock data; no backup command is executed.
-- SQLite schema exists and startup audit events are persisted, but most handlers
-  still serve in-memory mock data plus the new host/systemd readings.
+- Backup restore/delete are not implemented.
 
 ## Next phase suggestion
 Add guarded systemd control for predefined, validated units only: audited

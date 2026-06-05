@@ -41,6 +41,38 @@ export async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> 
   return (await res.json()) as T;
 }
 
+export async function apiPost<T>(
+  path: string,
+  body: unknown,
+  signal?: AbortSignal
+): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/api${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {})
+      },
+      body: JSON.stringify(body),
+      signal
+    });
+  } catch (e) {
+    throw new ApiError(0, e instanceof Error ? e.message : 'network error');
+  }
+  if (!res.ok) {
+    let message = `${res.status} ${res.statusText}`;
+    try {
+      const data = await res.json();
+      message = data?.error?.message ?? message;
+    } catch {
+      // keep HTTP status text
+    }
+    throw new ApiError(res.status, message);
+  }
+  return (await res.json()) as T;
+}
+
 /** Unauthenticated health check. Returns true if the backend is reachable. */
 export async function health(signal?: AbortSignal): Promise<boolean> {
   try {
@@ -142,16 +174,59 @@ export interface ResourcesResponse {
   perProcess: { map: string; ramMb: number; cpuPct: number }[];
 }
 
+export interface CapabilityItem {
+  enabled: boolean;
+  available: boolean;
+  reason: string;
+}
+
+export interface Capabilities {
+  systemdControl: CapabilityItem;
+  backup: CapabilityItem;
+  rcon: CapabilityItem;
+  discord: CapabilityItem;
+  configWrites: CapabilityItem;
+  modManagement: CapabilityItem;
+  restore: CapabilityItem;
+  mode: string;
+  backendSource: string;
+}
+
+export interface ActionRequest {
+  confirm: boolean;
+  strongConfirm?: boolean;
+  adminOverride?: boolean;
+  reason?: string;
+}
+
+export interface ActionResponse {
+  accepted: boolean;
+  actionId: string;
+  serverId: string;
+  operation: string;
+  result: string;
+  message: string;
+  auditEventId?: number | null;
+  updatedStatus?: unknown;
+  backup?: Backup;
+}
+
 export const api = {
   status: (s?: AbortSignal) => apiGet<ClusterStatus>('/status', s),
+  capabilities: (s?: AbortSignal) => apiGet<Capabilities>('/capabilities', s),
   servers: (s?: AbortSignal) => apiGet<ArkMap[]>('/servers', s),
   server: (id: string, s?: AbortSignal) =>
     apiGet<{ server: ArkMap; players: Player[] }>(`/servers/${encodeURIComponent(id)}`, s),
   resources: (s?: AbortSignal) => apiGet<ResourcesResponse>('/resources', s),
+  serverAction: (id: string, action: 'start' | 'stop' | 'restart' | 'backup', body: ActionRequest, s?: AbortSignal) =>
+    apiPost<ActionResponse>(`/servers/${encodeURIComponent(id)}/actions/${action}`, body, s),
   backups: (s?: AbortSignal) =>
     apiGet<{ backups: Backup[]; policy: Record<string, unknown> }>('/backups', s),
   activity: (s?: AbortSignal) =>
     apiGet<{ activity: LogEvent[]; recent: LogEvent[] }>('/activity', s),
+  rconStatus: (s?: AbortSignal) => apiGet<Record<string, unknown>>('/rcon/status', s),
+  players: (s?: AbortSignal) => apiGet<{ players: Player[]; source: string; rconEnabled: boolean }>('/players', s),
+  chatRecent: (s?: AbortSignal) => apiGet<Record<string, unknown>>('/chat/recent', s),
   config: (s?: AbortSignal) =>
     apiGet<{
       fields: ConfigField[];

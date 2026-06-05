@@ -137,11 +137,16 @@ export interface LogEvent {
 export interface Backup {
   id: string;
   map: string;
-  type: 'save' | 'config' | 'mod' | 'cluster data';
+  type: 'save' | 'config' | 'mod' | 'cluster data' | 'combined';
   sizeMb: number;
+  sizeBytes?: number;
   created: string;
-  reason: 'manual' | 'auto-shutdown' | 'resource standby' | 'scheduled' | 'pre-update' | 'pre-config-change' | 'pre-mod-change';
+  createdAt?: string;
+  completedAt?: string | null;
+  reason: 'manual' | 'manual_admin_action' | 'auto-shutdown' | 'resource standby' | 'scheduled' | 'pre-update' | 'pre-config-change' | 'pre-mod-change';
   status: 'success' | 'running' | 'failed' | 'verifying';
+  path?: string;
+  source?: string;
   progress?: number;
   error?: string;
 }

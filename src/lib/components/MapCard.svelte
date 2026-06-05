@@ -1,15 +1,28 @@
 <script lang="ts">
+  import type { Capabilities } from '$lib/api';
   import type { ArkMap } from '$lib/types';
   import StatusBadge from './StatusBadge.svelte';
   import Button from './Button.svelte';
   import ProgressBar from './ProgressBar.svelte';
   import { stateTone, rconTone, fmtDuration, fmtMb, barTone } from '$lib/ui';
 
-  let { map, onaction }: { map: ArkMap; onaction?: (action: string, map: ArkMap) => void } = $props();
+  let {
+    map,
+    capabilities = null,
+    onaction
+  }: {
+    map: ArkMap;
+    capabilities?: Capabilities | null;
+    onaction?: (action: string, map: ArkMap) => void;
+  } = $props();
 
   // action availability rules
   let isOffline = $derived(map.state === 'Offline' || map.state === 'Resource Standby');
   let ramPct = $derived(map.ramEstimateMb ? Math.round((map.ramMb / map.ramEstimateMb) * 100) : 0);
+  let controlEnabled = $derived(!!capabilities?.systemdControl.enabled && !!capabilities?.systemdControl.available);
+  let backupEnabled = $derived(!!capabilities?.backup.enabled && !!capabilities?.backup.available);
+  let controlReason = $derived(capabilities?.systemdControl.reason ?? 'Control disabled in this phase');
+  let backupReason = $derived(capabilities?.backup.reason ?? 'Backup disabled');
 </script>
 
 <div class="card-elevated flex flex-col p-4 transition-colors hover:border-[#3a3a3a]/50">
@@ -49,21 +62,23 @@
   <div class="mt-3 flex flex-wrap gap-1.5 border-t border-[#2a2a2a] pt-3">
     <Button size="sm" variant="ghost" href="/maps/{map.id}">Details</Button>
     {#if isOffline}
-      <Button size="sm" variant="primary" disabled title="Control disabled in this phase">Start</Button>
+      <Button size="sm" variant="primary" disabled={!controlEnabled} title={controlEnabled ? 'Start configured systemd unit' : controlReason} onclick={() => onaction?.('start', map)}>Start</Button>
     {:else}
       <Button
         size="sm"
         variant="warn"
-        disabled
-        title="Control disabled in this phase"
+        disabled={!controlEnabled}
+        title={controlEnabled ? 'Restart configured systemd unit' : controlReason}
+        onclick={() => onaction?.('restart', map)}
       >Restart</Button>
       <Button
         size="sm"
         variant="danger"
-        disabled
-        title="Control disabled in this phase"
+        disabled={!controlEnabled}
+        title={controlEnabled ? 'Stop configured systemd unit' : controlReason}
+        onclick={() => onaction?.('stop', map)}
       >Stop</Button>
     {/if}
-    <Button size="sm" variant="ghost" disabled title="Backup action disabled in this phase">Backup</Button>
+    <Button size="sm" variant="ghost" disabled={!backupEnabled} title={backupEnabled ? 'Create a safe configured-path backup' : backupReason} onclick={() => onaction?.('backup', map)}>Backup</Button>
   </div>
 </div>

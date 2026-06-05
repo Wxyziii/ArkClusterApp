@@ -2,8 +2,10 @@
 //! (systemd, rcon, governor) as inert data/abstractions only.
 
 pub mod audit;
+pub mod backup;
 pub mod domain;
 pub mod governor;
+pub mod operations;
 pub mod rcon;
 pub mod resources;
 pub mod systemd;
