@@ -1,0 +1,22 @@
+[Unit]
+Description=ARK Survival Evolved slot %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ark
+Group=ark
+WorkingDirectory=/srv/ark/server/ShooterGame/Binaries/Linux
+EnvironmentFile=/etc/ark-cluster-manager/slots/%i.env
+ExecStart=/usr/local/bin/ark-slot-start
+Restart=on-failure
+RestartSec=30
+LimitNOFILE=100000
+KillSignal=SIGINT
+TimeoutStopSec=300
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

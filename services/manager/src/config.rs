@@ -68,6 +68,16 @@ pub struct OperationsConfig {
     pub allow_travel_manual_stop: bool,
     #[serde(default = "default_true")]
     pub require_confirmation_token: bool,
+    #[serde(default)]
+    pub travel_scheduler_enabled: bool,
+    #[serde(default = "default_travel_idle_shutdown_secs")]
+    pub travel_idle_shutdown_secs: u32,
+    #[serde(default)]
+    pub config_writes_enabled: bool,
+    #[serde(default)]
+    pub mod_management_enabled: bool,
+    #[serde(default)]
+    pub maintenance_enabled: bool,
 }
 
 impl Default for OperationsConfig {
@@ -79,6 +89,11 @@ impl Default for OperationsConfig {
             allow_home_manual_stop: false,
             allow_travel_manual_stop: true,
             require_confirmation_token: true,
+            travel_scheduler_enabled: false,
+            travel_idle_shutdown_secs: default_travel_idle_shutdown_secs(),
+            config_writes_enabled: false,
+            mod_management_enabled: false,
+            maintenance_enabled: false,
         }
     }
 }
@@ -227,6 +242,9 @@ fn default_true() -> bool {
 fn default_rcon_poll() -> u32 {
     5
 }
+fn default_travel_idle_shutdown_secs() -> u32 {
+    10_800
+}
 fn default_unassigned() -> String {
     "Unassigned".to_string()
 }
@@ -310,6 +328,11 @@ impl Config {
         }
         if self.rcon.poll_interval_seconds == 0 {
             return Err(inv("rcon.poll_interval_seconds must be > 0".into()));
+        }
+        if self.operations.travel_idle_shutdown_secs == 0 {
+            return Err(inv(
+                "operations.travel_idle_shutdown_secs must be > 0".into()
+            ));
         }
 
         // --- travel slots: exactly one home, travel count within policy ---

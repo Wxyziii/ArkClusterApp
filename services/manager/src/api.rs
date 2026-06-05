@@ -22,6 +22,7 @@ use crate::models::operations::{self, ActionRequest, GuardError, ServerAction, S
 use crate::models::rcon::{RconEndpoint, RconListener};
 use crate::models::resources;
 use crate::models::systemd::UnitStatus;
+use crate::models::{config_edit, maintenance, mods as mod_ops, runtime, travel as travel_model};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -35,14 +36,24 @@ pub fn router() -> Router<AppState> {
         .route("/servers/{id}/actions/restart", post(server_restart))
         .route("/servers/{id}/actions/backup", post(server_backup))
         .route("/travel", get(travel))
+        .route("/travel/request", post(travel_request))
+        .route("/travel/history", get(travel_history))
         .route("/resources", get(resources))
+        .route("/runtime", get(runtime_status))
         .route("/backups", get(backups))
         .route("/activity", get(activity))
         .route("/rcon/status", get(rcon_status))
         .route("/players", get(players))
         .route("/chat/recent", get(chat_recent))
         .route("/config", get(config))
+        .route("/config/set", post(config_set))
         .route("/mods", get(mods))
+        .route("/mods/add", post(mod_add))
+        .route("/mods/enable", post(mod_enable))
+        .route("/mods/disable", post(mod_disable))
+        .route("/mods/remove", post(mod_remove))
+        .route("/maintenance/status", get(maintenance_status))
+        .route("/maintenance/update/ark", post(maintenance_ark_update))
         .route("/discord/status", get(discord_status))
         .route("/settings", get(settings))
 }
@@ -253,6 +264,7 @@ async fn travel(State(s): State<AppState>) -> impl IntoResponse {
     let maps = maps_with_status(&s).await;
     let slot = |name: &str| maps.iter().find(|m| m.assignment == name).cloned();
     let active = mock::active_travel();
+    let history = travel_model::history(&s.pool).await.unwrap_or_default();
     Json(json!({
         "slots": {
             "home": maps.iter().find(|m| m.is_home).cloned(),
@@ -263,8 +275,55 @@ async fn travel(State(s): State<AppState>) -> impl IntoResponse {
         "activeRequest": active,
         "stepper": { "current": 2, "blocked": true, "blockedAt": 2 },
         "blockReason": "Both travel slots have active players. Request queued until a slot frees or Home leaves Resource Standby.",
-        "queue": []
+        "queue": [],
+        "enabled": s.config.operations.travel_scheduler_enabled,
+        "idleShutdownSecs": s.config.operations.travel_idle_shutdown_secs,
+        "idleShutdownProduction": s.config.operations.travel_idle_shutdown_secs == 10800,
+        "homeResourceStandby": s.config.resource_policy.home_standby_enabled,
+        "recent": history
     }))
+}
+
+async fn travel_request(
+    State(s): State<AppState>,
+    Json(req): Json<travel_model::TravelRequestBody>,
+) -> impl IntoResponse {
+    let statuses = slot_statuses(&s).await;
+    match travel_model::decide(&s.pool, &s.config, req, statuses).await {
+        Ok(decision) if decision.accepted => {
+            audit::record(
+                &s.pool,
+                &AuditEvent::new(Severity::Info, "Travel", "travel request accepted")
+                    .target(decision.resolved_map.as_deref().unwrap_or(""))
+                    .detail(format!(
+                        "id={} slot={:?} reason={}",
+                        decision.id, decision.chosen_slot, decision.reason
+                    )),
+            )
+            .await;
+            Json(decision).into_response()
+        }
+        Ok(decision) => {
+            audit::record(
+                &s.pool,
+                &AuditEvent::new(Severity::Warn, "Travel", "travel request blocked")
+                    .target(decision.resolved_map.as_deref().unwrap_or(""))
+                    .detail(format!("id={} reason={}", decision.id, decision.reason)),
+            )
+            .await;
+            (StatusCode::CONFLICT, Json(decision)).into_response()
+        }
+        Err(err) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "OPERATION_FAILED",
+            err.to_string(),
+            json!({}),
+        ),
+    }
+}
+
+async fn travel_history(State(s): State<AppState>) -> impl IntoResponse {
+    Json(json!({ "history": travel_model::history(&s.pool).await.unwrap_or_default() }))
 }
 
 async fn resources(State(s): State<AppState>) -> impl IntoResponse {
@@ -310,6 +369,10 @@ async fn resources(State(s): State<AppState>) -> impl IntoResponse {
             "map": m.name, "ramMb": m.ram_mb, "cpuPct": m.cpu_pct
         })).collect::<Vec<_>>()
     }))
+}
+
+async fn runtime_status(State(s): State<AppState>) -> impl IntoResponse {
+    Json(runtime::status(&s.config).await)
 }
 
 async fn backups(State(s): State<AppState>) -> impl IntoResponse {
@@ -401,26 +464,116 @@ async fn chat_recent(State(s): State<AppState>) -> impl IntoResponse {
     }))
 }
 
-async fn config() -> impl IntoResponse {
+async fn config(State(s): State<AppState>) -> impl IntoResponse {
+    let shared = config_edit::read_shared(&s.config);
     Json(json!({
         "fields": mock::config_fields(),
-        "gameIni": mock::RAW_GAME_INI,
-        "gameUserSettingsIni": mock::RAW_GUS_INI,
+        "gameIni": shared.game_ini,
+        "gameUserSettingsIni": shared.game_user_settings_ini,
+        "shared": shared,
         "restartRequired": true,
-        // Phase 1: config writing is not implemented; UI editors are preview-only.
-        "writable": false
+        "writable": s.config.operations.config_writes_enabled
     }))
 }
 
-async fn mods() -> impl IntoResponse {
-    let list = mock::mods();
-    let restart_required = list.iter().any(|m| m.state == "disabled" || !m.installed);
-    Json(json!({
-        "mods": list,
-        "restartRequired": restart_required,
-        // Phase 1: no download/enable/disable/remove is implemented.
-        "mutable": false
-    }))
+async fn config_set(
+    State(s): State<AppState>,
+    Json(req): Json<config_edit::ConfigSetRequest>,
+) -> impl IntoResponse {
+    match config_edit::set_value(&s.pool, &s.config, req).await {
+        Ok(shared) => Json(json!({ "accepted": true, "shared": shared })).into_response(),
+        Err(err) => api_error(
+            status_for_error_code(err.code()),
+            err.code(),
+            err.to_string(),
+            json!({}),
+        ),
+    }
+}
+
+async fn mods(State(s): State<AppState>) -> impl IntoResponse {
+    match mod_ops::list(&s.pool, &s.config).await {
+        Ok(value) => Json(value).into_response(),
+        Err(err) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "OPERATION_FAILED",
+            err.to_string(),
+            json!({}),
+        ),
+    }
+}
+
+async fn mod_add(
+    State(s): State<AppState>,
+    Json(req): Json<mod_ops::ModMutation>,
+) -> impl IntoResponse {
+    mod_mutation(s, req, "add").await
+}
+
+async fn mod_enable(
+    State(s): State<AppState>,
+    Json(req): Json<mod_ops::ModMutation>,
+) -> impl IntoResponse {
+    mod_mutation(s, req, "enable").await
+}
+
+async fn mod_disable(
+    State(s): State<AppState>,
+    Json(req): Json<mod_ops::ModMutation>,
+) -> impl IntoResponse {
+    mod_mutation(s, req, "disable").await
+}
+
+async fn mod_remove(
+    State(s): State<AppState>,
+    Json(req): Json<mod_ops::ModMutation>,
+) -> impl IntoResponse {
+    mod_mutation(s, req, "remove").await
+}
+
+async fn mod_mutation(
+    s: AppState,
+    req: mod_ops::ModMutation,
+    action: &'static str,
+) -> axum::response::Response {
+    match mod_ops::record_known(&s.pool, &s.config, req, action).await {
+        Ok(value) => {
+            Json(json!({ "accepted": true, "action": action, "state": value })).into_response()
+        }
+        Err(err) => api_error(
+            status_for_error_code(err.code()),
+            err.code(),
+            err.to_string(),
+            json!({}),
+        ),
+    }
+}
+
+async fn maintenance_status(State(s): State<AppState>) -> impl IntoResponse {
+    match maintenance::status(&s.pool, &s.config).await {
+        Ok(value) => Json(value).into_response(),
+        Err(err) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "OPERATION_FAILED",
+            err.to_string(),
+            json!({}),
+        ),
+    }
+}
+
+async fn maintenance_ark_update(
+    State(s): State<AppState>,
+    Json(req): Json<maintenance::MaintenanceRequest>,
+) -> impl IntoResponse {
+    match maintenance::ark_update(&s.pool, &s.config, req).await {
+        Ok(value) => Json(value).into_response(),
+        Err(err) => api_error(
+            status_for_error_code(err.code()),
+            err.code(),
+            err.to_string(),
+            json!({}),
+        ),
+    }
 }
 
 async fn discord_status(State(s): State<AppState>) -> impl IntoResponse {
@@ -707,7 +860,15 @@ fn status_for_error_code(code: &str) -> StatusCode {
         "INVALID_CONFIRMATION" | "HOME_PROTECTED" | "PLAYERS_ONLINE" | "PATH_NOT_ALLOWED" => {
             StatusCode::BAD_REQUEST
         }
-        "CONTROL_DISABLED" | "BACKUP_DISABLED" | "RCON_DISABLED" => StatusCode::FORBIDDEN,
+        "CONTROL_DISABLED"
+        | "BACKUP_DISABLED"
+        | "RCON_DISABLED"
+        | "CONFIG_WRITES_DISABLED"
+        | "MOD_MANAGEMENT_DISABLED"
+        | "MAINTENANCE_DISABLED" => StatusCode::FORBIDDEN,
+        "INVALID_CONFIG_FILE" | "INVALID_CONFIG_KEY" | "INVALID_WORKSHOP_ID" => {
+            StatusCode::BAD_REQUEST
+        }
         "RESOURCE_POLICY_BLOCKED" => StatusCode::CONFLICT,
         "BACKUP_PATH_MISSING" | "UNIT_NOT_CONFIGURED" => StatusCode::SERVICE_UNAVAILABLE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
@@ -786,6 +947,28 @@ async fn real_activity(pool: &sqlx::SqlitePool) -> Result<Vec<serde_json::Value>
             })
         })
         .collect())
+}
+
+async fn slot_statuses(s: &AppState) -> Vec<(ServerSlot, &'static str, UnitStatus, u32)> {
+    let mut out = Vec::new();
+    if let Some(slots) = &s.config.slots {
+        for (slot, key, _) in slots.iter() {
+            let status = s
+                .systemd
+                .get_status(&slot.systemd_unit)
+                .await
+                .unwrap_or_else(|e| {
+                    UnitStatus::unavailable(&slot.systemd_unit, "fallback", e.to_string())
+                });
+            let players = mock::maps()
+                .iter()
+                .find(|m| m.id == slot.map_key)
+                .map(|m| m.players)
+                .unwrap_or(0);
+            out.push((slot.clone(), key, status, players));
+        }
+    }
+    out
 }
 
 #[derive(sqlx::FromRow)]

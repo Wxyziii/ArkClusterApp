@@ -34,6 +34,11 @@ rcon_enabled = false
 allow_home_manual_stop = false
 allow_travel_manual_stop = true
 require_confirmation_token = true
+travel_scheduler_enabled = false
+travel_idle_shutdown_secs = 10800
+config_writes_enabled = false
+mod_management_enabled = false
+maintenance_enabled = false
 
 [paths]
 ark_root = "/srv/ark"
@@ -92,20 +97,20 @@ role = "travel"
 [slots.home]
 id = "home"
 label = "Home"
-map_key = "home-island"
+map_key = "the-island"
 systemd_unit = "ark-server@home.service"
 game_port = 7777
 query_port = 27015
 rcon_port = 27020
-save_path = "/srv/ark/cluster/home/Saved"
-config_path = "/srv/ark/cluster/home/Saved/Config/LinuxServer"
+save_path = "/srv/ark/server/ShooterGame/Saved/SavedArks/home"
+config_path = "/srv/ark/server/ShooterGame/Saved/Config/LinuxServer"
 enabled = true
 protected = true
 home_resource_standby_enabled = true
 
 [slots.home.paths]
-save_dir = "/srv/ark/instances/home/ShooterGame/Saved"
-config_dir = "/srv/ark/instances/home/ShooterGame/Saved/Config/LinuxServer"
+save_dir = "/srv/ark/server/ShooterGame/Saved/SavedArks/home"
+config_dir = "/srv/ark/server/ShooterGame/Saved/Config/LinuxServer"
 
 [slots.home.rcon]
 host = "127.0.0.1"
@@ -115,7 +120,7 @@ password_env = "ARK_HOME_RCON_PASSWORD"
 [slots.travel_a]
 id = "travel-a"
 label = "Travel A"
-map_key = "travel-rag"
+map_key = "ragnarok"
 systemd_unit = "ark-server@travel-a.service"
 game_port = 7781
 query_port = 27016
@@ -125,8 +130,8 @@ protected = false
 home_resource_standby_enabled = false
 
 [slots.travel_a.paths]
-save_dir = "/srv/ark/instances/travel-a/ShooterGame/Saved"
-config_dir = "/srv/ark/instances/travel-a/ShooterGame/Saved/Config/LinuxServer"
+save_dir = "/srv/ark/server/ShooterGame/Saved/SavedArks/travel-a"
+config_dir = "/srv/ark/server/ShooterGame/Saved/Config/LinuxServer"
 
 [slots.travel_a.rcon]
 host = "127.0.0.1"
@@ -136,7 +141,7 @@ password_env = "ARK_TRAVEL_A_RCON_PASSWORD"
 [slots.travel_b]
 id = "travel-b"
 label = "Travel B"
-map_key = "travel-ab"
+map_key = "aberration"
 systemd_unit = "ark-server@travel-b.service"
 game_port = 7785
 query_port = 27017
@@ -146,8 +151,8 @@ protected = false
 home_resource_standby_enabled = false
 
 [slots.travel_b.paths]
-save_dir = "/srv/ark/instances/travel-b/ShooterGame/Saved"
-config_dir = "/srv/ark/instances/travel-b/ShooterGame/Saved/Config/LinuxServer"
+save_dir = "/srv/ark/server/ShooterGame/Saved/SavedArks/travel-b"
+config_dir = "/srv/ark/server/ShooterGame/Saved/Config/LinuxServer"
 
 [slots.travel_b.rcon]
 host = "127.0.0.1"
@@ -158,11 +163,11 @@ password_env = "ARK_TRAVEL_B_RCON_PASSWORD"
 # unique across all maps. Exactly one map should be can_be_home + assigned Home,
 # but at minimum one map must declare can_be_home = true.
 [[maps]]
-id = "home-island"
+id = "the-island"
 name = "The Island"
 alias = "island"
 ark_map_name = "TheIsland"
-systemd_unit = "ark-server@home-island.service"
+systemd_unit = "ark-server@home.service"
 query_port = 27015
 rcon_port = 27020
 game_port = 7777
@@ -174,14 +179,46 @@ assignment = "Home"
 mods = ["Structures Plus (S+)", "Awesome SpyGlass!", "Dino Storage v2", "Super Structures"]
 
 [[maps]]
-id = "travel-rag"
+id = "the-center"
+name = "The Center"
+alias = "center"
+ark_map_name = "TheCenter"
+systemd_unit = "ark-map@the-center.service"
+query_port = 27101
+rcon_port = 27201
+game_port = 7811
+slot_priority = 3
+can_be_home = true
+can_auto_stop_when_empty = true
+can_enter_standby = true
+assignment = "Unassigned"
+mods = []
+
+[[maps]]
+id = "scorched-earth"
+name = "Scorched Earth"
+alias = "scorched"
+ark_map_name = "ScorchedEarth_P"
+systemd_unit = "ark-map@scorched-earth.service"
+query_port = 27102
+rcon_port = 27202
+game_port = 7813
+slot_priority = 4
+can_be_home = true
+can_auto_stop_when_empty = true
+can_enter_standby = true
+assignment = "Unassigned"
+mods = []
+
+[[maps]]
+id = "ragnarok"
 name = "Ragnarok"
 alias = "ragnarok"
 ark_map_name = "Ragnarok"
 systemd_unit = "ark-server@travel-a.service"
-query_port = 27017
-rcon_port = 27022
-game_port = 7779
+query_port = 27016
+rcon_port = 27021
+game_port = 7781
 slot_priority = 1
 can_be_home = false
 can_auto_stop_when_empty = true
@@ -190,14 +227,14 @@ assignment = "Travel A"
 mods = ["Structures Plus (S+)", "Awesome SpyGlass!", "Dino Storage v2"]
 
 [[maps]]
-id = "travel-ab"
+id = "aberration"
 name = "Aberration"
 alias = "aberration"
-ark_map_name = "Aberration"
+ark_map_name = "Aberration_P"
 systemd_unit = "ark-server@travel-b.service"
-query_port = 27019
-rcon_port = 27024
-game_port = 7781
+query_port = 27017
+rcon_port = 27022
+game_port = 7785
 slot_priority = 2
 can_be_home = false
 can_auto_stop_when_empty = true
@@ -206,15 +243,111 @@ assignment = "Travel B"
 mods = ["Awesome SpyGlass!", "Dino Storage v2", "Aberration Ascended Loot"]
 
 [[maps]]
-id = "map-fjordur"
+id = "extinction"
+name = "Extinction"
+alias = "extinction"
+ark_map_name = "Extinction"
+systemd_unit = "ark-map@extinction.service"
+query_port = 27103
+rcon_port = 27203
+game_port = 7815
+slot_priority = 5
+can_be_home = true
+can_auto_stop_when_empty = true
+can_enter_standby = true
+assignment = "Unassigned"
+mods = []
+
+[[maps]]
+id = "valguero"
+name = "Valguero"
+alias = "valguero"
+ark_map_name = "Valguero_P"
+systemd_unit = "ark-map@valguero.service"
+query_port = 27104
+rcon_port = 27204
+game_port = 7817
+slot_priority = 6
+can_be_home = true
+can_auto_stop_when_empty = true
+can_enter_standby = true
+assignment = "Unassigned"
+mods = []
+
+[[maps]]
+id = "genesis-1"
+name = "Genesis: Part 1"
+alias = "gen1"
+ark_map_name = "Genesis"
+systemd_unit = "ark-map@genesis-1.service"
+query_port = 27105
+rcon_port = 27205
+game_port = 7819
+slot_priority = 7
+can_be_home = false
+can_auto_stop_when_empty = true
+can_enter_standby = false
+assignment = "Unassigned"
+mods = []
+
+[[maps]]
+id = "crystal-isles"
+name = "Crystal Isles"
+alias = "crystal"
+ark_map_name = "CrystalIsles"
+systemd_unit = "ark-map@crystal-isles.service"
+query_port = 27106
+rcon_port = 27206
+game_port = 7821
+slot_priority = 8
+can_be_home = true
+can_auto_stop_when_empty = true
+can_enter_standby = true
+assignment = "Unassigned"
+mods = []
+
+[[maps]]
+id = "genesis-2"
+name = "Genesis: Part 2"
+alias = "gen2"
+ark_map_name = "Gen2"
+systemd_unit = "ark-map@genesis-2.service"
+query_port = 27107
+rcon_port = 27207
+game_port = 7823
+slot_priority = 9
+can_be_home = false
+can_auto_stop_when_empty = true
+can_enter_standby = false
+assignment = "Unassigned"
+mods = []
+
+[[maps]]
+id = "lost-island"
+name = "Lost Island"
+alias = "lost"
+ark_map_name = "LostIsland"
+systemd_unit = "ark-map@lost-island.service"
+query_port = 27108
+rcon_port = 27208
+game_port = 7825
+slot_priority = 10
+can_be_home = true
+can_auto_stop_when_empty = true
+can_enter_standby = true
+assignment = "Unassigned"
+mods = []
+
+[[maps]]
+id = "fjordur"
 name = "Fjordur"
 alias = "fjordur"
 ark_map_name = "Fjordur"
-systemd_unit = "ark-server@travel-c.service"
-query_port = 27021
-rcon_port = 27026
-game_port = 7783
-slot_priority = 5
+systemd_unit = "ark-map@fjordur.service"
+query_port = 27109
+rcon_port = 27209
+game_port = 7827
+slot_priority = 11
 can_be_home = true
 can_auto_stop_when_empty = true
 can_enter_standby = true

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${ARK_MAP:?ARK_MAP required}"
+: "${ARK_SESSION_NAME:?ARK_SESSION_NAME required}"
+: "${ARK_PORT:?ARK_PORT required}"
+: "${ARK_QUERY_PORT:?ARK_QUERY_PORT required}"
+: "${ARK_RCON_PORT:?ARK_RCON_PORT required}"
+: "${ARK_ALT_SAVE_DIR:?ARK_ALT_SAVE_DIR required}"
+: "${ARK_CLUSTER_ID:?ARK_CLUSTER_ID required}"
+: "${ARK_CLUSTER_DIR:?ARK_CLUSTER_DIR required}"
+cd /srv/ark/server/ShooterGame/Binaries/Linux
+
+exec ./ShooterGameServer \
+  "${ARK_MAP}?SessionName=${ARK_SESSION_NAME}?Port=${ARK_PORT}?QueryPort=${ARK_QUERY_PORT}?RCONPort=${ARK_RCON_PORT}?AltSaveDirectoryName=${ARK_ALT_SAVE_DIR}?listen" \
+  -clusterid="${ARK_CLUSTER_ID}" \
+  -ClusterDirOverride="${ARK_CLUSTER_DIR}" \
+  ${ARK_ADDITIONAL_ARGS:-}

@@ -58,6 +58,8 @@ pub struct Capabilities {
     pub config_writes: CapabilityItem,
     pub mod_management: CapabilityItem,
     pub restore: CapabilityItem,
+    pub travel_scheduler: CapabilityItem,
+    pub maintenance: CapabilityItem,
     pub mode: String,
     pub backend_source: String,
 }
@@ -81,9 +83,27 @@ pub fn capabilities(config: &Config, backend_source: &str) -> Capabilities {
             "RCON disabled or unconfigured",
         ),
         discord: item(false, false, "Discord actions are not implemented"),
-        config_writes: item(false, false, "config writes are not implemented"),
-        mod_management: item(false, false, "mod management is not implemented"),
+        config_writes: item(
+            ops.config_writes_enabled,
+            ops.config_writes_enabled,
+            "config writes disabled in manager config",
+        ),
+        mod_management: item(
+            ops.mod_management_enabled,
+            ops.mod_management_enabled,
+            "mod management disabled in manager config",
+        ),
         restore: item(false, false, "backup restore is not implemented"),
+        travel_scheduler: item(
+            ops.travel_scheduler_enabled,
+            ops.travel_scheduler_enabled,
+            "travel scheduler disabled in manager config",
+        ),
+        maintenance: item(
+            ops.maintenance_enabled,
+            ops.maintenance_enabled,
+            "ARK maintenance disabled in manager config",
+        ),
         mode: "guarded_operations_foundation".into(),
         backend_source: backend_source.into(),
     }

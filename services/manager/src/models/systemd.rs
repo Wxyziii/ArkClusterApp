@@ -230,8 +230,10 @@ async fn run_systemctl_action(action: &str, unit: &str) -> Result<(), SystemdErr
     #[cfg(target_os = "linux")]
     {
         let output = time::timeout(
-            Duration::from_secs(20),
-            Command::new("systemctl").args([action, unit]).output(),
+            Duration::from_secs(240),
+            Command::new("sudo")
+                .args(["-n", "systemctl", action, unit])
+                .output(),
         )
         .await;
 

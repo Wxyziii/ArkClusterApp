@@ -4,14 +4,11 @@ Dark, survival-tech admin dashboard for a private ARK: Survival Evolved smart cl
 
 **Two parts, clearly separated:**
 - **Frontend** — SvelteKit + TypeScript UI (this repo root, `src/`).
-- **Backend** — Rust manager service (`services/manager/`), T1.1 read-only host awareness.
+- **Backend** — Rust manager service (`services/manager/`), guarded ARK runtime control-plane foundation.
 
-> ⚠️ **T1.1 scope.** The backend can read Linux host resources and read-only
-> systemd unit status for configured ARK slots. It does **NOT** start, stop,
-> restart, enable, disable, or reload ARK units. It does not send RCON commands,
-> run Discord bot actions, write ARK config files, or download/remove mods. The
-> UI consumes real backend data where available and falls back to local mock data
-> when the backend or host capability is unavailable.
+> Private/Tailscale use only. The backend exposes guarded lifecycle, backup,
+> runtime, travel, config, mod, and maintenance API contracts. Dangerous
+> operations stay capability-gated in `manager.toml`.
 
 ## Repo layout
 ```
@@ -115,6 +112,11 @@ rcon_enabled = false
 allow_home_manual_stop = false
 allow_travel_manual_stop = true
 require_confirmation_token = true
+travel_scheduler_enabled = false
+travel_idle_shutdown_secs = 10800
+config_writes_enabled = false
+mod_management_enabled = false
+maintenance_enabled = false
 ```
 
 `GET /api/capabilities` tells the UI what is enabled and why something is
@@ -157,8 +159,47 @@ port = 27020
 password_env = "ARK_HOME_RCON_PASSWORD"
 ```
 Passwords must come from environment variables and are never returned or logged.
-T1.2 exposes disabled/unconfigured status and dry-run chat command parsing
-helpers, but does not execute `!travel` or any RCON write/control command.
+T1.2/T1.3 exposes disabled/unconfigured status and chat command parsing helpers.
+RCON generic command execution is intentionally not exposed.
+
+## Server-Side Runtime Phase
+
+This repo now includes idempotent Ubuntu setup artifacts:
+
+```text
+scripts/server/install_steamcmd.sh
+scripts/server/install_or_update_ark_server.sh
+scripts/server/prepare_ark_runtime.sh
+deploy/systemd/ark-server@.service
+deploy/systemd/ark-slot-start
+deploy/systemd/slot.env.example
+```
+
+ARK: Survival Evolved uses SteamCMD app `376030`, shared install
+`/srv/ark/server`, shared config
+`/srv/ark/server/ShooterGame/Saved/Config/LinuxServer`, and shared cluster dir
+`/srv/ark/clusters/main`. Home / Travel A / Travel B differ only through slot
+env files and launch args: map, session, game/query/RCON ports,
+`AltSaveDirectoryName`, cluster id, and safe flags.
+
+New backend API:
+
+```text
+GET  /api/runtime
+GET  /api/travel
+POST /api/travel/request
+GET  /api/travel/history
+GET  /api/config
+POST /api/config/set
+GET  /api/mods
+POST /api/mods/add|enable|disable|remove
+GET  /api/maintenance/status
+POST /api/maintenance/update/ark
+```
+
+Config writes, mod changes, maintenance jobs, travel scheduler, systemd control,
+and RCON are independently disabled by default until the live Ubuntu config is
+reviewed.
 
 ### API endpoints (T1.1, read-only)
 `GET /health` is public. **Everything under `/api/*` requires
