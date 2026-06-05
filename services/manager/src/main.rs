@@ -22,6 +22,7 @@ use axum::routing::get;
 use axum::{middleware, Json, Router};
 use serde_json::json;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
@@ -105,9 +106,13 @@ async fn run() -> Result<(), i32> {
         auth::require_token,
     ));
 
+    let web_root = std::env::var("ARK_MANAGER_WEB_ROOT").unwrap_or_else(|_| "build".into());
+    let static_files = ServeDir::new(&web_root).fallback(ServeFile::new(format!("{web_root}/index.html")));
+
     let app = Router::new()
         .route("/health", get(health))
         .nest("/api", api)
+        .fallback_service(static_files)
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         .layer(cors);
