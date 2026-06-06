@@ -12,10 +12,10 @@ mod api;
 mod auth;
 mod config;
 mod db;
-#[cfg(test)]
-mod test_data;
 mod models;
 mod state;
+#[cfg(test)]
+mod test_data;
 
 use axum::http::{header, Method};
 use axum::routing::get;
@@ -95,6 +95,7 @@ async fn run() -> Result<(), i32> {
             .detail(format!("source: {config_path}")),
     )
     .await;
+    crate::models::rcon::spawn_runtime_tasks(state.clone());
 
     // --- routing ---
     let cors = CorsLayer::new()

@@ -199,7 +199,9 @@ async fn status(State(s): State<AppState>) -> impl IntoResponse {
         .iter()
         .filter(|m| matches!(m.state.as_str(), "Online" | "Ready" | "Starting"))
         .count();
-    let player_count_known = maps.iter().any(|m| m.player_count_source == "rcon");
+    let player_count_known = maps
+        .iter()
+        .any(|m| m.configured && m.player_count_source == "rcon");
     let players = player_count_known.then(|| maps.iter().map(|m| m.players).sum::<u32>());
 
     Json(json!({
@@ -259,12 +261,24 @@ async fn server_detail(State(s): State<AppState>, Path(id): Path<String>) -> imp
     match maps_with_status(&s).await.into_iter().find(|m| m.id == id) {
         Some(map) => {
             let player_count_source = map.player_count_source.clone();
+            let map_name = map.name.clone();
+            let players = s
+                .rcon_runtime
+                .read()
+                .await
+                .players_response(&s.config)
+                .players;
+            let map_players = players
+                .into_iter()
+                .filter(|p| p.map == map_name)
+                .collect::<Vec<_>>();
+            let available = player_count_source == "rcon";
             Json(json!({
                 "server": map,
-                "players": [],
+                "players": map_players,
                 "playerCountSource": player_count_source,
-                "available": false,
-                "reason": "RCON player polling is not connected"
+                "available": available,
+                "reason": if available { "RCON player polling live" } else { "RCON player polling unavailable" }
             }))
             .into_response()
         }
@@ -375,20 +389,25 @@ async fn travel(State(s): State<AppState>) -> impl IntoResponse {
     let statuses = slot_statuses(&s).await;
     let slots = statuses
         .iter()
-        .map(|(slot, key, status, _)| {
-            let current_map = maps.iter().find(|m| m.id == slot.map_key).cloned();
+        .map(|snapshot| {
+            let current_map_id = travel_model::effective_slot_map_id(&s.config, &snapshot.slot);
+            let current_map = maps.iter().find(|m| m.id == current_map_id).cloned();
+            let player_count_source = current_map
+                .as_ref()
+                .map(|m| m.player_count_source.as_str())
+                .unwrap_or("unavailable");
             json!({
-                "slotId": slot.id,
-                "role": slot_role_label(key),
-                "mapKey": slot.map_key,
+                "slotId": snapshot.slot.id,
+                "role": slot_role_label(snapshot.key),
+                "mapKey": current_map_id,
                 "map": current_map,
-                "unit": slot.systemd_unit,
-                "systemd": status.state,
-                "active": status.active,
-                "playerCount": null,
-                "playerCountSource": "unavailable",
+                "unit": snapshot.slot.systemd_unit,
+                "systemd": snapshot.status.state,
+                "active": snapshot.status.active,
+                "playerCount": snapshot.player_count,
+                "playerCountSource": player_count_source,
                 "idleShutdownSecs": s.config.operations.travel_idle_shutdown_secs,
-                "policy": if slot.protected { "protected" } else { "on_demand" }
+                "policy": if snapshot.slot.protected { "protected" } else { "on_demand" }
             })
         })
         .collect::<Vec<_>>();
@@ -413,7 +432,16 @@ async fn travel_request(
     Json(req): Json<travel_model::TravelRequestBody>,
 ) -> impl IntoResponse {
     let statuses = slot_statuses(&s).await;
-    match travel_model::decide(&s.pool, &s.config, req, statuses).await {
+    match travel_model::request_with_start(
+        &s.pool,
+        &s.config,
+        s.systemd.clone(),
+        s.manager_started_at,
+        req,
+        statuses,
+    )
+    .await
+    {
         Ok(decision) if decision.accepted => {
             audit::record(
                 &s.pool,
@@ -457,7 +485,10 @@ async fn resources(State(s): State<AppState>) -> impl IntoResponse {
     let p = &s.config.resource_policy;
 
     let maps = maps_with_status(&s).await;
-    let player_counts_available = maps.iter().all(|m| m.player_count_source == "rcon");
+    let player_counts_available = maps
+        .iter()
+        .filter(|m| m.configured && matches!(m.state.as_str(), "Online" | "Ready" | "Starting"))
+        .all(|m| m.player_count_source == "rcon");
     let decision = if player_counts_available {
         let home_players: u32 = maps.iter().filter(|m| m.is_home).map(|m| m.players).sum();
         let travel_players: u32 = maps.iter().filter(|m| !m.is_home).map(|m| m.players).sum();
@@ -563,25 +594,15 @@ async fn activity(State(s): State<AppState>) -> impl IntoResponse {
 }
 
 async fn rcon_status(State(s): State<AppState>) -> impl IntoResponse {
-    Json(crate::models::rcon::status_from_config(&s.config))
+    Json(s.rcon_runtime.read().await.status_from_config(&s.config))
 }
 
-async fn players() -> impl IntoResponse {
-    Json(json!({
-        "players": [],
-        "source": "rcon_unavailable",
-        "rconEnabled": false,
-        "available": false,
-        "reason": "RCON player polling is not connected"
-    }))
+async fn players(State(s): State<AppState>) -> impl IntoResponse {
+    Json(s.rcon_runtime.read().await.players_response(&s.config))
 }
 
 async fn chat_recent(State(s): State<AppState>) -> impl IntoResponse {
-    Json(json!({
-        "messages": [],
-        "detectedCommands": [],
-        "source": if s.config.operations.rcon_enabled && s.config.rcon.enabled { "rcon_unavailable" } else { "disabled" }
-    }))
+    Json(s.rcon_runtime.read().await.chat_response(&s.config))
 }
 
 async fn config(State(s): State<AppState>) -> impl IntoResponse {
@@ -1003,7 +1024,7 @@ async fn settings(State(s): State<AppState>) -> impl IntoResponse {
             "tokenMasked": "••••••••",
             "note": "Token is never logged or returned by the API."
         },
-        "rcon": crate::models::rcon::status_from_config(&s.config),
+        "rcon": s.rcon_runtime.read().await.status_from_config(&s.config),
         "systemdUnits": maps.iter().map(|m| json!({
             "map": m.name,
             "unit": m.config.systemd_unit,
@@ -1032,7 +1053,17 @@ async fn server_systemd_action(
     let current_map = maps
         .iter()
         .find(|m| m.id == slot.map_key || m.config.systemd_unit == slot.systemd_unit);
-    let player_count = current_map.map(|m| m.players).unwrap_or(0);
+    let player_count = current_map
+        .map(|m| {
+            if m.player_count_source == "rcon" {
+                m.players
+            } else if matches!(m.state.as_str(), "Online" | "Ready" | "Starting") {
+                1
+            } else {
+                0
+            }
+        })
+        .unwrap_or(0);
     let active_travel_slots = maps
         .iter()
         .filter(|m| !m.is_home && matches!(m.state.as_str(), "Online" | "Ready" | "Starting"))
@@ -1287,7 +1318,7 @@ async fn real_activity(pool: &sqlx::SqlitePool) -> Result<Vec<serde_json::Value>
         .collect())
 }
 
-async fn slot_statuses(s: &AppState) -> Vec<(ServerSlot, &'static str, UnitStatus, u32)> {
+async fn slot_statuses(s: &AppState) -> Vec<travel_model::SlotStatusSnapshot> {
     let mut out = Vec::new();
     if let Some(slots) = &s.config.slots {
         for (slot, key, _) in slots.iter() {
@@ -1298,10 +1329,17 @@ async fn slot_statuses(s: &AppState) -> Vec<(ServerSlot, &'static str, UnitStatu
                 .unwrap_or_else(|e| {
                     UnitStatus::unavailable(&slot.systemd_unit, "systemd", e.to_string())
                 });
-            // Fail-safe guard: until RCON supplies a real count, active slots are
-            // considered occupied and will not be reused as "empty".
-            let players = if status.active { 1 } else { 0 };
-            out.push((slot.clone(), key, status, players));
+            let player_count = if status.active {
+                s.rcon_runtime.read().await.player_count(&slot.id)
+            } else {
+                Some(0)
+            };
+            out.push(travel_model::SlotStatusSnapshot {
+                slot: slot.clone(),
+                key,
+                status,
+                player_count,
+            });
         }
     }
     out
@@ -1345,11 +1383,9 @@ async fn maps_with_status(s: &AppState) -> Vec<ArkMap> {
     let (max_players, max_players_source) = max_players_from_shared(&shared);
 
     for official in OFFICIAL_MAPS {
-        let cfg = s
-            .config
-            .maps
-            .iter()
-            .find(|cfg| !used_config_ids.contains(&cfg.id) && config_matches_official(cfg, official));
+        let cfg = s.config.maps.iter().find(|cfg| {
+            !used_config_ids.contains(&cfg.id) && config_matches_official(cfg, official)
+        });
         let mut map = if let Some(cfg) = cfg {
             used_config_ids.insert(cfg.id.clone());
             map_from_config(cfg, max_players, &max_players_source)
@@ -1376,18 +1412,34 @@ async fn enrich_map_runtime(map: &mut ArkMap, s: &AppState) {
     if map.configured {
         if let Some((slot, slot_key)) = configured_slot_for_map(&s.config, &map.id) {
             apply_slot_to_map(map, slot, slot_key);
+        } else if let Some((slot, _)) =
+            configured_slot_for_unit(&s.config, &map.config.systemd_unit)
+        {
+            let effective = travel_model::effective_slot_map_id(&s.config, slot);
+            if effective != map.id {
+                map.assignment = "Unassigned".into();
+                map.state = "Offline".into();
+                map.systemd = "assigned to another map".into();
+                map.rcon = "Disconnected".into();
+                map.player_count_source = "unavailable".into();
+                map.next_action = format!("On-demand slot is currently assigned to {effective}");
+                map.systemd_detail = None;
+                return;
+            }
         }
         if map.config.systemd_unit.trim().is_empty() {
             map.systemd = "unavailable".into();
-            map.systemd_detail = Some(UnitStatus::unavailable("", "config", "systemd unit not configured"));
+            map.systemd_detail = Some(UnitStatus::unavailable(
+                "",
+                "config",
+                "systemd unit not configured",
+            ));
         } else {
             let detail = match s.systemd.get_status(&map.config.systemd_unit).await {
                 Ok(status) => status,
-                Err(err) => UnitStatus::unavailable(
-                    &map.config.systemd_unit,
-                    "systemd",
-                    err.to_string(),
-                ),
+                Err(err) => {
+                    UnitStatus::unavailable(&map.config.systemd_unit, "systemd", err.to_string())
+                }
             };
             map.systemd = detail.state.clone();
             map.state = map_state_from_systemd(map, &detail);
@@ -1396,11 +1448,30 @@ async fn enrich_map_runtime(map: &mut ArkMap, s: &AppState) {
             }
             map.systemd_detail = Some(detail);
         }
-        map.rcon = if s.config.operations.rcon_enabled && s.config.rcon.enabled {
-            "Unavailable".into()
-        } else {
-            "Disabled".into()
-        };
+        if let Some(slot_id) = &map.slot_id {
+            if let Some(runtime) = s.rcon_runtime.read().await.endpoint_for(slot_id).cloned() {
+                map.rcon = runtime.state.as_str().into();
+                if runtime.active {
+                    if let Some(count) = runtime.player_count {
+                        map.players = count;
+                        map.player_count_source = "rcon".into();
+                    } else {
+                        map.players = 0;
+                        map.player_count_source = "rcon_unavailable".into();
+                    }
+                    map.next_action = runtime
+                        .last_error
+                        .clone()
+                        .unwrap_or_else(|| "RCON player polling live".into());
+                }
+            } else {
+                map.rcon = if s.config.operations.rcon_enabled && s.config.rcon.enabled {
+                    "Connecting".into()
+                } else {
+                    "Disabled".into()
+                };
+            }
+        }
     } else {
         map.systemd_detail = None;
     }
@@ -1527,7 +1598,10 @@ fn config_matches_official(cfg: &MapConfig, official: &OfficialMap) -> bool {
 
 fn max_players_from_shared(shared: &config_edit::SharedConfig) -> (u32, String) {
     for (file, raw) in [
-        ("GameUserSettings.ini", shared.game_user_settings_ini.as_str()),
+        (
+            "GameUserSettings.ini",
+            shared.game_user_settings_ini.as_str(),
+        ),
         ("Game.ini", shared.game_ini.as_str()),
     ] {
         if let Some(value) = parse_max_players(raw) {
@@ -1603,7 +1677,19 @@ fn configured_slot_for_map<'a>(
     slots
         .iter()
         .into_iter()
-        .find(|(slot, _, _)| slot.map_key == map_id)
+        .find(|(slot, _, _)| travel_model::effective_slot_map_id(config, slot) == map_id)
+        .map(|(slot, key, _)| (slot, key))
+}
+
+fn configured_slot_for_unit<'a>(
+    config: &'a crate::config::Config,
+    unit: &str,
+) -> Option<(&'a ServerSlot, &'static str)> {
+    let slots = config.slots.as_ref()?;
+    slots
+        .iter()
+        .into_iter()
+        .find(|(slot, _, _)| slot.systemd_unit == unit)
         .map(|(slot, key, _)| (slot, key))
 }
 
