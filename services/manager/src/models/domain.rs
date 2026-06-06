@@ -60,6 +60,9 @@ pub struct ArkMap {
     pub is_home: bool,
     pub protected: bool,
     pub configured: bool,
+    pub launch_ready: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub slot_id: Option<String>,
     pub slot_role: String,

@@ -196,6 +196,7 @@ export interface TravelState {
   maxTravelServers: number;
   homeResourceStandby: boolean;
   slots: TravelSlotState[];
+  destinations: ArkMap[];
   recent: unknown[];
   queue: unknown[];
   blockReason?: string | null;
@@ -206,9 +207,11 @@ export interface TravelDecision {
   accepted: boolean;
   requestedMap: string;
   resolvedMap?: string;
+  resolvedMapName?: string;
   chosenSlot?: string;
   status: string;
   reason: string;
+  userMessage: string;
 }
 
 export interface ActionRequest {

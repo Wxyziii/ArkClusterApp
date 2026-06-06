@@ -1,4 +1,5 @@
 use std::fs;
+use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -68,7 +69,8 @@ pub async fn run_slot_backup(
     let created_at = now_sql();
     let backup_root = backup_root(config);
     validate_clean_abs("backup root", backup_root)?;
-    fs::create_dir_all(backup_root)?;
+    fs::create_dir_all(backup_root)
+        .map_err(|e| io_context("create backup root", backup_root, e))?;
 
     let dest = backup_root.join(&slot.id).join(&id);
     validate_under_root("backup destination", &dest, backup_root)?;
@@ -85,7 +87,7 @@ pub async fn run_slot_backup(
     validate_clean_abs("ark root", ark_root)?;
     let mut copied_any = false;
     let mut size = 0u64;
-    fs::create_dir_all(&dest)?;
+    fs::create_dir_all(&dest).map_err(|e| io_context("create backup destination", &dest, e))?;
 
     for (name, src) in sources {
         validate_clean_abs(name, &src)?;
@@ -93,8 +95,10 @@ pub async fn run_slot_backup(
         if !src.exists() {
             continue;
         }
-        let canonical_src = fs::canonicalize(&src)?;
-        let canonical_root = fs::canonicalize(ark_root)?;
+        let canonical_src =
+            fs::canonicalize(&src).map_err(|e| io_context("canonicalize source", &src, e))?;
+        let canonical_root = fs::canonicalize(ark_root)
+            .map_err(|e| io_context("canonicalize ARK root", ark_root, e))?;
         if !canonical_src.starts_with(&canonical_root) {
             return Err(BackupError::PathNotAllowed(format!(
                 "{} escapes allowed root",
@@ -241,8 +245,15 @@ fn normalize_lexical(path: &Path) -> PathBuf {
     path.components().collect()
 }
 
+fn io_context(action: &str, path: &Path, err: io::Error) -> BackupError {
+    BackupError::Io(io::Error::new(
+        err.kind(),
+        format!("{action} '{}': {err}", path.display()),
+    ))
+}
+
 fn copy_tree(src: &Path, dest: &Path) -> Result<u64, BackupError> {
-    let meta = fs::symlink_metadata(src)?;
+    let meta = fs::symlink_metadata(src).map_err(|e| io_context("inspect source", src, e))?;
     if meta.file_type().is_symlink() {
         return Err(BackupError::PathNotAllowed(format!(
             "symlink source rejected: {}",
@@ -251,15 +262,21 @@ fn copy_tree(src: &Path, dest: &Path) -> Result<u64, BackupError> {
     }
     if meta.is_file() {
         if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent)
+                .map_err(|e| io_context("create backup parent", parent, e))?;
         }
-        fs::copy(src, dest)?;
+        fs::copy(src, dest).map_err(|e| {
+            BackupError::Io(io::Error::new(
+                e.kind(),
+                format!("copy '{}' to '{}': {e}", src.display(), dest.display()),
+            ))
+        })?;
         return Ok(meta.len());
     }
-    fs::create_dir_all(dest)?;
+    fs::create_dir_all(dest).map_err(|e| io_context("create backup directory", dest, e))?;
     let mut size = 0u64;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
+    for entry in fs::read_dir(src).map_err(|e| io_context("read source directory", src, e))? {
+        let entry = entry.map_err(|e| io_context("read source directory entry", src, e))?;
         let child_src = entry.path();
         let child_dest = dest.join(entry.file_name());
         size = size.saturating_add(copy_tree(&child_src, &child_dest)?);

@@ -10,6 +10,7 @@ export const stateTone: Record<MapState, Tone> = {
   'Backing Up': 'amber',
   Stopping: 'amber',
   'Resource Standby': 'gray',
+  'Not running': 'gray',
   Error: 'red',
   Unknown: 'gray',
   Unavailable: 'gray'

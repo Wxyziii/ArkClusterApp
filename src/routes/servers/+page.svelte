@@ -14,8 +14,9 @@
   let working = $state(false);
 
   const configured = $derived(maps.filter((m) => m.configured));
-  const officialMissing = $derived(maps.filter((m) => !m.configured));
-  const destinations = $derived(maps.filter((m) => m.configured && !m.isHome));
+  const launchReady = $derived(maps.filter((m) => m.launchReady));
+  const unavailable = $derived(maps.filter((m) => !m.launchReady));
+  const destinations = $derived(maps.filter((m) => m.launchReady && !m.isHome));
 
   onMount(load);
 
@@ -27,7 +28,7 @@
       maps = srv;
       capabilities = caps;
       travel = tr;
-      selected = selected ? (srv.find((m) => m.id === selected?.id) ?? null) : (srv.find((m) => m.configured) ?? null);
+      selected = selected ? (srv.find((m) => m.id === selected?.id) ?? null) : (srv.find((m) => m.launchReady) ?? null);
     } catch (e) {
       error = e instanceof Error ? e.message : 'API request failed';
     } finally {
@@ -76,7 +77,13 @@
   }
 
   function players(map: ArkMap) {
-    return map.playerCountSource === 'rcon' ? String(map.players) : 'unknown';
+    if (map.playerCountSource === 'rcon') return String(map.players);
+    if (map.launchReady && ['Not running', 'Offline'].includes(map.state)) return '0';
+    return 'unknown';
+  }
+
+  function canRunDirectAction(map: ArkMap) {
+    return map.configured && Boolean(map.config.systemdUnit);
   }
 </script>
 
@@ -95,8 +102,8 @@
   {#if message}<div class="notice">{message}</div>{/if}
 
   <div class="grid cols-4">
-    <div class="panel"><div class="panel-body metric"><span>Configured</span><strong>{configured.length}</strong><span>cluster maps</span></div></div>
-    <div class="panel"><div class="panel-body metric"><span>Official missing</span><strong>{officialMissing.length}</strong><span>shown as unavailable</span></div></div>
+    <div class="panel"><div class="panel-body metric"><span>Configured</span><strong>{configured.length}</strong><span>static cluster maps</span></div></div>
+    <div class="panel"><div class="panel-body metric"><span>Launch-ready</span><strong>{launchReady.length}</strong><span>{unavailable.length} unavailable</span></div></div>
     <div class="panel"><div class="panel-body metric"><span>Travel scheduler</span><strong>{travel?.enabled ? 'On' : 'Off'}</strong><span>{travel?.maxTravelServers ?? 0} max on-demand</span></div></div>
     <div class="panel"><div class="panel-body metric"><span>Systemd control</span><strong>{capabilities?.systemdControl.available ? 'Available' : 'Disabled'}</strong><span>{capabilities?.systemdControl.reason ?? 'unknown'}</span></div></div>
   </div>
@@ -113,7 +120,7 @@
             {#each maps as map (map.id)}
               <tr onclick={() => selectMap(map)} style="cursor:pointer">
                 <td><strong>{map.name}</strong><div class="muted mono">{map.id}</div></td>
-                <td><span class="chip {map.state === 'Online' ? 'green' : map.configured ? 'amber' : 'red'}">{map.state}</span></td>
+                <td><span class="chip {map.state === 'Online' ? 'green' : map.launchReady ? 'amber' : 'red'}">{map.state}</span></td>
                 <td>{map.slotRole}</td>
                 <td>{players(map)}</td>
                 <td>{map.maxPlayers ?? 'unknown'}</td>
@@ -140,14 +147,15 @@
           <label class="muted" for="reason">Action reason</label>
           <input id="reason" class="field" bind:value={actionReason} />
           <div class="toolbar" style="justify-content:flex-start">
-            <button class="button primary" disabled={!selected.configured || working || !capabilities?.systemdControl.available} onclick={() => runAction('start')}>Start</button>
-            <button class="button" disabled={!selected.configured || working || !capabilities?.systemdControl.available} onclick={() => runAction('restart')}>Restart</button>
-            <button class="button" disabled={!selected.configured || working || !capabilities?.systemdControl.available} onclick={() => runAction('stop')}>Stop</button>
-            <button class="button" disabled={!selected.configured || working || !capabilities?.backup.available} onclick={() => runAction('backup')}>Backup</button>
+            <button class="button primary" disabled={!canRunDirectAction(selected) || working || !capabilities?.systemdControl.available} onclick={() => runAction('start')}>Start</button>
+            <button class="button" disabled={!canRunDirectAction(selected) || working || !capabilities?.systemdControl.available} onclick={() => runAction('restart')}>Restart</button>
+            <button class="button" disabled={!canRunDirectAction(selected) || working || !capabilities?.systemdControl.available} onclick={() => runAction('stop')}>Stop</button>
+            <button class="button" disabled={!canRunDirectAction(selected) || working || !capabilities?.backup.available} onclick={() => runAction('backup')}>Backup</button>
+            <button class="button" disabled={!selected.launchReady || selected.isHome || !travel?.enabled || working} onclick={() => selected && requestTravel(selected)}>Request Travel</button>
           </div>
           <div class="notice">Actions are sent to the backend guard. Player counts are unknown unless RCON is connected, so active on-demand slots are treated conservatively.</div>
         {:else}
-          <p class="muted">Select a configured map.</p>
+          <p class="muted">Select a launch-ready map.</p>
         {/if}
       </div>
     </div>
@@ -169,7 +177,7 @@
                 <td><button class="button" disabled={!travel?.enabled || working} onclick={() => requestTravel(map)}>Request</button></td>
               </tr>
             {:else}
-              <tr><td colspan="4">No configured destinations.</td></tr>
+              <tr><td colspan="4">No launch-ready destinations.</td></tr>
             {/each}
           </tbody>
         </table>

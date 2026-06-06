@@ -11,8 +11,7 @@
   let error = $state<string | null>(null);
   let loading = $state(true);
 
-  const configuredMaps = $derived(maps.filter((m) => m.configured));
-  const unavailableMaps = $derived(maps.filter((m) => !m.configured));
+  const launchReadyMaps = $derived(maps.filter((m) => m.launchReady));
   const onlineMaps = $derived(maps.filter((m) => ['Online', 'Ready', 'Starting'].includes(m.state)));
 
   onMount(load);
@@ -43,6 +42,12 @@
   function cap(value: number | null) {
     return value === null ? 'unknown' : String(value);
   }
+
+  function playerText(map: ArkMap) {
+    if (map.playerCountSource === 'rcon') return String(map.players);
+    if (map.launchReady && ['Not running', 'Offline'].includes(map.state)) return '0';
+    return 'unknown';
+  }
 </script>
 
 <section class="page">
@@ -63,7 +68,7 @@
 
   <div class="grid cols-4">
     <div class="panel"><div class="panel-body metric"><span>Manager</span><strong>{status?.manager.status ?? 'Unavailable'}</strong><span>{status?.dataMode ?? 'live'} mode</span></div></div>
-    <div class="panel"><div class="panel-body metric"><span>Online maps</span><strong>{onlineMaps.length}</strong><span>{configuredMaps.length} configured</span></div></div>
+    <div class="panel"><div class="panel-body metric"><span>Online maps</span><strong>{onlineMaps.length}</strong><span>{launchReadyMaps.length} launch-ready</span></div></div>
     <div class="panel"><div class="panel-body metric"><span>Players</span><strong>{status?.players ?? 'Unknown'}</strong><span>{status?.playerCountSource ?? 'unavailable'}</span></div></div>
     <div class="panel"><div class="panel-body metric"><span>RAM pressure</span><strong>{status?.resourcePressure.ramPct ?? resources?.derived.ramPct ?? 0}%</strong><span>{status?.resourcePressure.source ?? resources?.source ?? 'unavailable'}</span></div></div>
   </div>
@@ -103,7 +108,7 @@
   <div class="panel">
     <div class="panel-head">
       <h2>Servers</h2>
-      <span class="chip">{unavailableMaps.length} official maps not configured</span>
+      <span class="chip">{launchReadyMaps.length} launch-ready destinations</span>
     </div>
     <div class="table-wrap">
       <table>
@@ -116,7 +121,7 @@
               <td><strong>{map.name}</strong><div class="muted mono">{map.config.arkMapName}</div></td>
               <td><span class="chip {map.state === 'Online' ? 'green' : map.state === 'Unavailable' ? 'red' : 'amber'}">{map.state}</span></td>
               <td>{map.slotRole}</td>
-              <td>{map.playerCountSource === 'rcon' ? map.players : 'unknown'}</td>
+              <td>{playerText(map)}</td>
               <td>{cap(map.maxPlayers)}</td>
               <td class="mono">{map.systemd}</td>
             </tr>

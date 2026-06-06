@@ -10,6 +10,7 @@ export type MapState =
   | 'Backing Up'
   | 'Stopping'
   | 'Resource Standby'
+  | 'Not running'
   | 'Error'
   | 'Unknown'
   | 'Unavailable';
@@ -90,6 +91,8 @@ export interface ArkMap {
   isHome: boolean;
   protected: boolean;
   configured: boolean;
+  launchReady: boolean;
+  unavailableReason?: string;
   slotId?: string;
   slotRole: string;
   nextAction: string;

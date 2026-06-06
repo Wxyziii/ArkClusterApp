@@ -10,6 +10,114 @@ use crate::models::resources;
 use crate::models::systemd::SystemdController;
 use crate::models::systemd::UnitStatus;
 
+#[derive(Debug, Clone, Copy)]
+pub struct OfficialMapProfile {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub alias: &'static str,
+    pub ark_map_name: &'static str,
+    pub aliases: &'static [&'static str],
+}
+
+pub const OFFICIAL_MAPS: &[OfficialMapProfile] = &[
+    OfficialMapProfile {
+        id: "the-island",
+        name: "The Island",
+        alias: "island",
+        ark_map_name: "TheIsland",
+        aliases: &["island", "the island", "theisland", "the-island"],
+    },
+    OfficialMapProfile {
+        id: "scorched-earth",
+        name: "Scorched Earth",
+        alias: "scorched",
+        ark_map_name: "ScorchedEarth_P",
+        aliases: &[
+            "scorched",
+            "scorched earth",
+            "scorchedearth",
+            "scorched-earth",
+        ],
+    },
+    OfficialMapProfile {
+        id: "aberration",
+        name: "Aberration",
+        alias: "aberration",
+        ark_map_name: "Aberration_P",
+        aliases: &["abb", "aberration"],
+    },
+    OfficialMapProfile {
+        id: "extinction",
+        name: "Extinction",
+        alias: "extinction",
+        ark_map_name: "Extinction",
+        aliases: &["ext", "extinction"],
+    },
+    OfficialMapProfile {
+        id: "genesis-1",
+        name: "Genesis: Part 1",
+        alias: "gen1",
+        ark_map_name: "Genesis",
+        aliases: &[
+            "genesis",
+            "genesis 1",
+            "genesis1",
+            "genesis part 1",
+            "gen1",
+            "gen 1",
+        ],
+    },
+    OfficialMapProfile {
+        id: "genesis-2",
+        name: "Genesis: Part 2",
+        alias: "gen2",
+        ark_map_name: "Gen2",
+        aliases: &["genesis 2", "genesis2", "genesis part 2", "gen2", "gen 2"],
+    },
+    OfficialMapProfile {
+        id: "the-center",
+        name: "The Center",
+        alias: "center",
+        ark_map_name: "TheCenter",
+        aliases: &["center", "the center", "thecenter", "the-center"],
+    },
+    OfficialMapProfile {
+        id: "ragnarok",
+        name: "Ragnarok",
+        alias: "rag",
+        ark_map_name: "Ragnarok",
+        aliases: &["rag", "ragnarok"],
+    },
+    OfficialMapProfile {
+        id: "valguero",
+        name: "Valguero",
+        alias: "valg",
+        ark_map_name: "Valguero_P",
+        aliases: &["valg", "valguero"],
+    },
+    OfficialMapProfile {
+        id: "crystal-isles",
+        name: "Crystal Isles",
+        alias: "crystal",
+        ark_map_name: "CrystalIsles",
+        aliases: &["crystal", "crystal isles", "crystal-isles", "crystalisles"],
+    },
+    OfficialMapProfile {
+        id: "lost-island",
+        name: "Lost Island",
+        alias: "lost",
+        ark_map_name: "LostIsland",
+        aliases: &["lost", "lost island", "lost-island", "lostisland"],
+    },
+    OfficialMapProfile {
+        id: "fjordur",
+        name: "Fjordur",
+        alias: "fjordur",
+        ark_map_name: "Fjordur",
+        aliases: &["fjord", "fjordur"],
+    },
+];
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TravelRequestBody {
@@ -31,9 +139,11 @@ pub struct TravelDecision {
     pub accepted: bool,
     pub requested_map: String,
     pub resolved_map: Option<String>,
+    pub resolved_map_name: Option<String>,
     pub chosen_slot: Option<String>,
     pub status: String,
     pub reason: String,
+    pub user_message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -84,12 +194,53 @@ pub struct SlotStatusSnapshot {
     pub player_count: Option<u32>,
 }
 
-pub fn resolve_map<'a>(config: &'a Config, raw: &str) -> Option<&'a MapConfig> {
+pub fn official_maps() -> &'static [OfficialMapProfile] {
+    OFFICIAL_MAPS
+}
+
+pub fn resolve_map(config: &Config, raw: &str) -> Option<MapConfig> {
     let key = normalize(raw);
-    config.maps.iter().find(|m| {
-        let aliases = aliases_for(&m.id, &m.alias, &m.ark_map_name, &m.name);
-        aliases.iter().any(|a| normalize(a) == key)
-    })
+    config
+        .maps
+        .iter()
+        .find(|m| {
+            let aliases = aliases_for(&m.id, &m.alias, &m.ark_map_name, &m.name);
+            aliases.iter().any(|a| normalize(a) == key)
+        })
+        .cloned()
+        .or_else(|| official_profile_for_key(&key).map(map_config_from_official))
+}
+
+pub fn map_profile_by_id(config: &Config, map_id: &str) -> Option<MapConfig> {
+    config
+        .maps
+        .iter()
+        .find(|m| normalize(&m.id) == normalize(map_id))
+        .cloned()
+        .or_else(|| official_profile_for_key(&normalize(map_id)).map(map_config_from_official))
+}
+
+pub fn official_profile_for(raw: &str) -> Option<OfficialMapProfile> {
+    official_profile_for_key(&normalize(raw))
+}
+
+pub fn map_config_from_official(profile: OfficialMapProfile) -> MapConfig {
+    MapConfig {
+        id: profile.id.into(),
+        name: profile.name.into(),
+        alias: profile.alias.into(),
+        ark_map_name: profile.ark_map_name.into(),
+        systemd_unit: String::new(),
+        query_port: 0,
+        rcon_port: 0,
+        game_port: 0,
+        slot_priority: 100,
+        can_be_home: false,
+        can_auto_stop_when_empty: true,
+        can_enter_standby: false,
+        assignment: "Available destination".into(),
+        mods: vec![],
+    }
 }
 
 pub async fn decide(
@@ -100,48 +251,43 @@ pub async fn decide(
 ) -> Result<TravelDecision, sqlx::Error> {
     let id = format!("travel-{}", epoch_millis());
     let Some(map) = resolve_map(config, &req.map) else {
-        let reason = if known_official_map(&req.map) {
-            "official map is not configured in this cluster"
-        } else {
-            "unknown map"
-        };
-        let decision = TravelDecision {
+        let decision = travel_decision(
             id,
-            accepted: false,
-            requested_map: req.map.clone(),
-            resolved_map: None,
-            chosen_slot: None,
-            status: "rejected".into(),
-            reason: reason.into(),
-        };
+            false,
+            req.map.clone(),
+            None,
+            None,
+            "rejected",
+            "unknown map",
+        );
         insert_history(pool, &decision, &req, "").await?;
         return Ok(decision);
     };
     if !config.operations.travel_scheduler_enabled {
-        let decision = TravelDecision {
+        let decision = travel_decision(
             id,
-            accepted: false,
-            requested_map: req.map.clone(),
-            resolved_map: Some(map.id.clone()),
-            chosen_slot: None,
-            status: "blocked".into(),
-            reason: "travel scheduler disabled in manager config".into(),
-        };
+            false,
+            req.map.clone(),
+            Some(&map),
+            None,
+            "blocked",
+            "travel scheduler disabled in manager config",
+        );
         insert_history(pool, &decision, &req, "").await?;
         return Ok(decision);
     }
     if let Some(snapshot) = slot_statuses.iter().find(|snapshot| {
         effective_slot_map_id(config, &snapshot.slot) == map.id && snapshot.status.active
     }) {
-        let decision = TravelDecision {
+        let decision = travel_decision(
             id,
-            accepted: true,
-            requested_map: req.map.clone(),
-            resolved_map: Some(map.id.clone()),
-            chosen_slot: Some(snapshot.slot.id.clone()),
-            status: "already_online".into(),
-            reason: "map already online".into(),
-        };
+            true,
+            req.map.clone(),
+            Some(&map),
+            Some(snapshot.slot.id.clone()),
+            "already_online",
+            "map already online",
+        );
         insert_history(pool, &decision, &req, snapshot.key).await?;
         return Ok(decision);
     }
@@ -153,41 +299,100 @@ pub async fn decide(
             snapshot.key != "home" && snapshot.status.active && snapshot.player_count == Some(0)
         });
         if let Some(snapshot) = empty {
-            let decision = TravelDecision {
+            let decision = travel_decision(
                 id,
-                accepted: true,
-                requested_map: req.map.clone(),
-                resolved_map: Some(map.id.clone()),
-                chosen_slot: Some(snapshot.slot.id.clone()),
-                status: "accepted_reuse_empty_slot".into(),
-                reason: "empty active travel slot can be backed up and reused".into(),
-            };
+                true,
+                req.map.clone(),
+                Some(&map),
+                Some(snapshot.slot.id.clone()),
+                "accepted_reuse_empty_slot",
+                "empty active travel slot can be backed up and reused",
+            );
             insert_history(pool, &decision, &req, snapshot.key).await?;
             return Ok(decision);
         }
-        let decision = TravelDecision {
+        let decision = travel_decision(
             id,
-            accepted: false,
-            requested_map: req.map.clone(),
-            resolved_map: Some(map.id.clone()),
-            chosen_slot: None,
-            status: "queued".into(),
-            reason: "both travel slots have active players".into(),
-        };
+            false,
+            req.map.clone(),
+            Some(&map),
+            None,
+            "queued",
+            "both travel slots have active players",
+        );
         insert_history(pool, &decision, &req, "").await?;
         return Ok(decision);
     };
-    let decision = TravelDecision {
+    let decision = travel_decision(
         id,
-        accepted: true,
-        requested_map: req.map.clone(),
-        resolved_map: Some(map.id.clone()),
-        chosen_slot: Some(snapshot.slot.id.clone()),
-        status: "accepted".into(),
-        reason: "free on-demand slot selected".into(),
-    };
+        true,
+        req.map.clone(),
+        Some(&map),
+        Some(snapshot.slot.id.clone()),
+        "accepted",
+        "free on-demand slot selected",
+    );
     insert_history(pool, &decision, &req, snapshot.key).await?;
     Ok(decision)
+}
+
+fn travel_decision(
+    id: String,
+    accepted: bool,
+    requested_map: String,
+    map: Option<&MapConfig>,
+    chosen_slot: Option<String>,
+    status: &str,
+    reason: impl Into<String>,
+) -> TravelDecision {
+    let reason = reason.into();
+    let resolved_map = map.map(|m| m.id.clone());
+    let resolved_map_name = map.map(|m| m.name.clone());
+    let mut decision = TravelDecision {
+        id,
+        accepted,
+        requested_map,
+        resolved_map,
+        resolved_map_name,
+        chosen_slot,
+        status: status.into(),
+        reason,
+        user_message: String::new(),
+    };
+    refresh_user_message(&mut decision);
+    decision
+}
+
+fn set_decision_status(
+    decision: &mut TravelDecision,
+    accepted: bool,
+    status: &str,
+    reason: impl Into<String>,
+) {
+    decision.accepted = accepted;
+    decision.status = status.into();
+    decision.reason = reason.into();
+    refresh_user_message(decision);
+}
+
+fn refresh_user_message(decision: &mut TravelDecision) {
+    let map_name = decision
+        .resolved_map_name
+        .as_deref()
+        .or(decision.resolved_map.as_deref())
+        .unwrap_or(decision.requested_map.as_str());
+    decision.user_message = match decision.status.as_str() {
+        "starting" => format!("Starting {map_name}. This may take a few minutes."),
+        "already_online" => format!("{map_name} is already running."),
+        "queued" => format!("Cannot start {map_name}: no travel slot is available."),
+        "blocked" => format!("Cannot start {map_name}: {}.", decision.reason),
+        "failed" | "failed_start" => format!("Cannot start {map_name}: {}.", decision.reason),
+        "rejected" => format!(
+            "Unknown map: {}. Try fjordur, ragnarok, gen1, gen2, aberration, etc.",
+            decision.requested_map
+        ),
+        _ => decision.reason.clone(),
+    };
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -211,19 +416,25 @@ pub async fn request_with_start(
         return Ok(decision);
     }
     if decision.status == "accepted_reuse_empty_slot" {
-        decision.accepted = false;
-        decision.status = "blocked".into();
-        decision.reason = "reuse of active empty slots requires a stop/backup handoff; no free stopped slot is available".into();
+        set_decision_status(
+            &mut decision,
+            false,
+            "blocked",
+            "reuse of active empty slots requires a stop/backup handoff; no free stopped slot is available",
+        );
         update_history(pool, &decision, "reuse_active_slot_blocked").await?;
         return Ok(decision);
     }
     let Some(map_id) = decision.resolved_map.clone() else {
         return Ok(decision);
     };
-    let Some(map) = config.maps.iter().find(|m| m.id == map_id) else {
-        decision.accepted = false;
-        decision.status = "failed".into();
-        decision.reason = "resolved map missing from config".into();
+    let Some(map) = map_profile_by_id(config, &map_id) else {
+        set_decision_status(
+            &mut decision,
+            false,
+            "failed",
+            "resolved map missing from config and official profile catalog",
+        );
         update_history(pool, &decision, "").await?;
         return Ok(decision);
     };
@@ -234,16 +445,22 @@ pub async fn request_with_start(
         .iter()
         .find(|snapshot| snapshot.slot.id == slot_id)
     else {
-        decision.accepted = false;
-        decision.status = "failed".into();
-        decision.reason = "chosen travel slot missing from config".into();
+        set_decision_status(
+            &mut decision,
+            false,
+            "failed",
+            "chosen travel slot missing from config",
+        );
         update_history(pool, &decision, "").await?;
         return Ok(decision);
     };
     if snapshot.key == "home" {
-        decision.accepted = false;
-        decision.status = "failed".into();
-        decision.reason = "Home cannot be used as an on-demand travel slot".into();
+        set_decision_status(
+            &mut decision,
+            false,
+            "failed",
+            "Home cannot be used as an on-demand travel slot",
+        );
         update_history(pool, &decision, "").await?;
         return Ok(decision);
     }
@@ -269,30 +486,33 @@ pub async fn request_with_start(
         active_travel_slots,
         player_count: 0,
     }) {
-        decision.accepted = false;
-        decision.status = "blocked".into();
-        decision.reason = err.message();
+        set_decision_status(&mut decision, false, "blocked", err.message());
         update_history(pool, &decision, "guard_blocked").await?;
         return Ok(decision);
     }
 
-    if let Err(err) = write_runtime_slot_override(&snapshot.slot, map) {
-        decision.accepted = false;
-        decision.status = "failed_start".into();
-        decision.reason = format!("failed to write travel slot runtime override: {err}");
+    if let Err(err) = write_runtime_slot_override(&snapshot.slot, &map) {
+        set_decision_status(
+            &mut decision,
+            false,
+            "failed_start",
+            format!("failed to write travel slot runtime override: {err}"),
+        );
         update_history(pool, &decision, "override_write_failed").await?;
         return Ok(decision);
     }
     match systemd.start_unit(&snapshot.slot.systemd_unit).await {
         Ok(()) => {
-            decision.status = "starting".into();
-            decision.reason = format!("starting {}", map.name);
+            set_decision_status(
+                &mut decision,
+                true,
+                "starting",
+                format!("starting {}", map.name),
+            );
             update_history(pool, &decision, snapshot.key).await?;
         }
         Err(err) => {
-            decision.accepted = false;
-            decision.status = "failed_start".into();
-            decision.reason = format!("{err}");
+            set_decision_status(&mut decision, false, "failed_start", format!("{err}"));
             update_history(pool, &decision, snapshot.key).await?;
         }
     }
@@ -356,6 +576,11 @@ pub fn effective_slot_map_id(config: &Config, slot: &ServerSlot) -> String {
     let Ok(content) = std::fs::read_to_string(runtime_slot_override_path(slot)) else {
         return slot.map_key.clone();
     };
+    if let Some(map_id) = env_value(&content, "ARK_EFFECTIVE_MAP_ID") {
+        if map_profile_by_id(config, &map_id).is_some() {
+            return map_id;
+        }
+    }
     let Some(ark_map) = env_value(&content, "ARK_MAP") else {
         return slot.map_key.clone();
     };
@@ -364,6 +589,12 @@ pub fn effective_slot_map_id(config: &Config, slot: &ServerSlot) -> String {
         .iter()
         .find(|map| normalize(&map.ark_map_name) == normalize(&ark_map))
         .map(|map| map.id.clone())
+        .or_else(|| {
+            official_maps()
+                .iter()
+                .find(|map| normalize(map.ark_map_name) == normalize(&ark_map))
+                .map(|map| map.id.into())
+        })
         .unwrap_or_else(|| slot.map_key.clone())
 }
 
@@ -427,20 +658,52 @@ fn shell_quote(value: &str) -> String {
 
 fn aliases_for(id: &str, alias: &str, ark: &str, name: &str) -> Vec<String> {
     let mut out = vec![id.into(), alias.into(), ark.into(), name.into()];
+    if let Some(profile) = official_maps()
+        .iter()
+        .find(|profile| normalize(profile.id) == normalize(id))
+    {
+        out.extend(profile.aliases.iter().copied().map(str::to_string));
+    }
     match id {
-        "the-island" | "home-island" => out.extend(["island", "theisland"].map(str::to_string)),
-        "the-center" => out.extend(["center"].map(str::to_string)),
-        "scorched-earth" => out.extend(["scorched", "scorched earth"].map(str::to_string)),
+        "the-island" | "home-island" => {
+            out.extend(["island", "the island", "theisland", "the-island"].map(str::to_string))
+        }
+        "the-center" => {
+            out.extend(["center", "the center", "thecenter", "the-center"].map(str::to_string))
+        }
+        "scorched-earth" => out.extend(
+            [
+                "scorched",
+                "scorched earth",
+                "scorchedearth",
+                "scorched-earth",
+            ]
+            .map(str::to_string),
+        ),
         "extinction" => out.extend(["ext"].map(str::to_string)),
         "ragnarok" | "travel-rag" => out.extend(["rag"].map(str::to_string)),
         "aberration" | "travel-ab" => out.extend(["abb"].map(str::to_string)),
         "valguero" => out.extend(["val", "valg"].map(str::to_string)),
-        "genesis-1" => {
-            out.extend(["gen1", "genesis", "genesis 1", "genesis part 1"].map(str::to_string))
+        "genesis-1" => out.extend(
+            [
+                "gen1",
+                "gen 1",
+                "genesis",
+                "genesis1",
+                "genesis 1",
+                "genesis part 1",
+            ]
+            .map(str::to_string),
+        ),
+        "crystal-isles" => out.extend(
+            ["crystal", "crystal isles", "crystal-isles", "crystalisles"].map(str::to_string),
+        ),
+        "genesis-2" => out.extend(
+            ["gen2", "gen 2", "genesis2", "genesis 2", "genesis part 2"].map(str::to_string),
+        ),
+        "lost-island" => {
+            out.extend(["lost", "lost island", "lost-island", "lostisland"].map(str::to_string))
         }
-        "crystal-isles" => out.extend(["crystal", "crystal isles"].map(str::to_string)),
-        "genesis-2" => out.extend(["gen2", "genesis 2", "genesis part 2"].map(str::to_string)),
-        "lost-island" => out.extend(["lost", "lost island"].map(str::to_string)),
         "fjordur" | "map-fjordur" => out.extend(["fjord"].map(str::to_string)),
         _ => {}
     }
@@ -448,62 +711,21 @@ fn aliases_for(id: &str, alias: &str, ark: &str, name: &str) -> Vec<String> {
 }
 
 fn known_official_map(raw: &str) -> bool {
-    let key = normalize(raw);
-    official_aliases()
-        .iter()
-        .any(|alias| normalize(alias) == key)
+    official_profile_for_key(&normalize(raw)).is_some()
 }
 
-fn official_aliases() -> &'static [&'static str] {
-    &[
-        "the-island",
-        "The Island",
-        "TheIsland",
-        "island",
-        "scorched-earth",
-        "Scorched Earth",
-        "ScorchedEarth_P",
-        "scorched",
-        "aberration",
-        "Aberration_P",
-        "abb",
-        "extinction",
-        "ext",
-        "genesis-1",
-        "Genesis: Part 1",
-        "genesis 1",
-        "Genesis",
-        "gen1",
-        "genesis part 1",
-        "genesis-2",
-        "Genesis: Part 2",
-        "genesis 2",
-        "Gen2",
-        "gen2",
-        "genesis part 2",
-        "the-center",
-        "The Center",
-        "TheCenter",
-        "center",
-        "ragnarok",
-        "rag",
-        "valguero",
-        "Valguero_P",
-        "val",
-        "valg",
-        "crystal-isles",
-        "Crystal Isles",
-        "CrystalIsles",
-        "crystal",
-        "crystal isles",
-        "lost-island",
-        "Lost Island",
-        "LostIsland",
-        "lost",
-        "lost island",
-        "fjordur",
-        "fjord",
-    ]
+fn official_profile_for_key(key: &str) -> Option<OfficialMapProfile> {
+    official_maps().iter().copied().find(|profile| {
+        [
+            profile.id,
+            profile.name,
+            profile.alias,
+            profile.ark_map_name,
+        ]
+        .into_iter()
+        .chain(profile.aliases.iter().copied())
+        .any(|alias| normalize(alias) == key)
+    })
 }
 
 fn normalize(s: &str) -> String {
@@ -535,18 +757,43 @@ mod tests {
         for alias in [
             "island",
             "the island",
+            "theisland",
+            "the-island",
+            "scorched",
             "scorched earth",
+            "scorchedearth",
+            "scorched-earth",
             "abb",
+            "aberration",
             "ext",
+            "extinction",
+            "genesis",
+            "gen1",
+            "gen 1",
+            "genesis1",
             "genesis 1",
             "genesis part 1",
+            "gen2",
+            "gen 2",
+            "genesis2",
             "genesis 2",
             "genesis part 2",
+            "center",
             "the center",
+            "thecenter",
+            "the-center",
             "rag",
+            "ragnarok",
             "valg",
+            "valguero",
+            "crystal",
             "crystal isles",
+            "crystal-isles",
+            "crystalisles",
+            "lost",
             "lost island",
+            "lost-island",
+            "lostisland",
             "fjord",
             "fjordur",
         ] {
@@ -556,6 +803,75 @@ mod tests {
             );
         }
         assert!(!known_official_map("not-a-map"));
+    }
+
+    #[test]
+    fn official_catalog_contains_launchable_profiles() {
+        assert_eq!(official_maps().len(), 12);
+        for profile in official_maps() {
+            assert!(!profile.id.trim().is_empty(), "{} missing id", profile.name);
+            assert!(
+                !profile.name.trim().is_empty(),
+                "{} missing name",
+                profile.id
+            );
+            assert!(
+                !profile.ark_map_name.trim().is_empty(),
+                "{} missing launch map",
+                profile.id
+            );
+            assert!(
+                !profile.aliases.is_empty(),
+                "{} missing aliases",
+                profile.id
+            );
+            let cfg = map_config_from_official(*profile);
+            assert_eq!(cfg.id, profile.id);
+            assert_eq!(cfg.ark_map_name, profile.ark_map_name);
+            assert!(cfg.can_auto_stop_when_empty);
+        }
+    }
+
+    #[test]
+    fn resolves_all_required_official_aliases_without_config_profiles() {
+        let mut cfg = crate::config::tests_support::base_config();
+        cfg.maps.clear();
+        let cases = [
+            ("island", "the-island"),
+            ("the island", "the-island"),
+            ("scorched", "scorched-earth"),
+            ("scorched earth", "scorched-earth"),
+            ("abb", "aberration"),
+            ("aberration", "aberration"),
+            ("ext", "extinction"),
+            ("extinction", "extinction"),
+            ("genesis", "genesis-1"),
+            ("gen1", "genesis-1"),
+            ("genesis 1", "genesis-1"),
+            ("genesis part 1", "genesis-1"),
+            ("gen2", "genesis-2"),
+            ("genesis 2", "genesis-2"),
+            ("genesis part 2", "genesis-2"),
+            ("center", "the-center"),
+            ("the center", "the-center"),
+            ("rag", "ragnarok"),
+            ("ragnarok", "ragnarok"),
+            ("valg", "valguero"),
+            ("valguero", "valguero"),
+            ("crystal", "crystal-isles"),
+            ("crystal isles", "crystal-isles"),
+            ("lost", "lost-island"),
+            ("lost island", "lost-island"),
+            ("fjord", "fjordur"),
+            ("fjordur", "fjordur"),
+        ];
+        for (alias, expected) in cases {
+            assert_eq!(
+                resolve_map(&cfg, alias).map(|map| map.id),
+                Some(expected.into()),
+                "alias {alias}"
+            );
+        }
     }
 
     #[tokio::test]

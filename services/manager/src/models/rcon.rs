@@ -951,8 +951,18 @@ async fn process_detected_command(state: &AppState, message: ChatMessage) {
     if cmd.command != "travel" {
         return;
     }
+    let requested_map = cmd.argument.clone();
+    let received_map_name = travel::resolve_map(&state.config, &requested_map)
+        .map(|map| map.name)
+        .unwrap_or_else(|| requested_map.clone());
+    let received_feedback = format!("[ARK Cluster] Travel request received: {received_map_name}.");
+    let received_feedback_result =
+        send_chat_feedback(state, &message.slot_id, &received_feedback).await;
+    if let Err(err) = &received_feedback_result {
+        record_feedback_unavailable(state, &message, err).await;
+    }
     let req = TravelRequestBody {
-        map: cmd.argument,
+        map: requested_map.clone(),
         source: "in_game_chat".into(),
         actor: if message.player.trim().is_empty() {
             "unknown-player".into()
@@ -972,6 +982,12 @@ async fn process_detected_command(state: &AppState, message: ChatMessage) {
     .await
     {
         Ok(decision) => {
+            let decision_feedback = ark_feedback_for_decision(&decision);
+            let decision_feedback_result =
+                send_chat_feedback(state, &message.slot_id, &decision_feedback).await;
+            if let Err(err) = &decision_feedback_result {
+                record_feedback_unavailable(state, &message, err).await;
+            }
             let severity = if decision.accepted {
                 Severity::Info
             } else {
@@ -983,8 +999,12 @@ async fn process_detected_command(state: &AppState, message: ChatMessage) {
                     .actor(&message.player)
                     .target(decision.resolved_map.as_deref().unwrap_or(""))
                     .detail(format!(
-                        "id={} status={} reason={}",
-                        decision.id, decision.status, decision.reason
+                        "id={} status={} reason={} feedbackReceived={} feedbackResult={}",
+                        decision.id,
+                        decision.status,
+                        decision.reason,
+                        feedback_result_label(&received_feedback_result),
+                        feedback_result_label(&decision_feedback_result)
                     )),
             )
             .await;
@@ -999,6 +1019,78 @@ async fn process_detected_command(state: &AppState, message: ChatMessage) {
             .await;
         }
     }
+}
+
+async fn send_chat_feedback(state: &AppState, slot_id: &str, message: &str) -> Result<(), String> {
+    let Some(slots) = &state.config.slots else {
+        return Err("slot config unavailable".into());
+    };
+    let Some((slot, _, _)) = slots
+        .iter()
+        .into_iter()
+        .find(|(slot, _, _)| slot.id == slot_id)
+    else {
+        return Err(format!("source slot {slot_id} is not configured"));
+    };
+    let Some(rcon) = &slot.rcon else {
+        return Err(format!("source slot {slot_id} has no RCON endpoint"));
+    };
+    let password = std::env::var(&rcon.password_env).unwrap_or_default();
+    if password.trim().is_empty() {
+        return Err(format!("missing password env {}", rcon.password_env));
+    }
+    let safe_message = sanitize_chat_message(message);
+    run_rcon_command(
+        &rcon.host,
+        rcon.port,
+        &password,
+        &format!("ServerChat {safe_message}"),
+        Duration::from_secs(5),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|err| sanitize_error(&err.to_string()))
+}
+
+async fn record_feedback_unavailable(state: &AppState, message: &ChatMessage, error: &str) {
+    audit::record(
+        &state.pool,
+        &AuditEvent::new(Severity::Warn, "Travel", "feedback_unavailable")
+            .actor(&message.player)
+            .target(&message.slot_id)
+            .detail(error),
+    )
+    .await;
+}
+
+fn feedback_result_label(result: &Result<(), String>) -> String {
+    match result {
+        Ok(()) => "sent".into(),
+        Err(err) => format!("feedback_unavailable:{err}"),
+    }
+}
+
+fn ark_feedback_for_decision(decision: &travel::TravelDecision) -> String {
+    let message =
+        if decision.status == "blocked" && decision.reason.contains("travel scheduler disabled") {
+            format!("Travel is currently unavailable: {}.", decision.reason)
+        } else {
+            decision.user_message.clone()
+        };
+    format!("[ARK Cluster] {message}")
+}
+
+fn sanitize_chat_message(message: &str) -> String {
+    message
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(220)
+        .collect()
 }
 
 pub async fn travel_slot_statuses(state: &AppState) -> Vec<travel::SlotStatusSnapshot> {
@@ -1349,5 +1441,25 @@ mod tests {
         assert!(!home_standby_allowed(Some(0), false, true));
         assert!(!home_standby_allowed(Some(0), true, false));
         assert!(home_standby_allowed(Some(0), true, true));
+    }
+
+    #[test]
+    fn ark_feedback_uses_player_safe_message() {
+        let decision = travel::TravelDecision {
+            id: "travel-1".into(),
+            accepted: true,
+            requested_map: "gen1".into(),
+            resolved_map: Some("genesis-1".into()),
+            resolved_map_name: Some("Genesis: Part 1".into()),
+            chosen_slot: Some("travel-a".into()),
+            status: "starting".into(),
+            reason: "starting Genesis: Part 1".into(),
+            user_message: "Starting Genesis: Part 1. This may take a few minutes.".into(),
+        };
+        assert_eq!(
+            ark_feedback_for_decision(&decision),
+            "[ARK Cluster] Starting Genesis: Part 1. This may take a few minutes."
+        );
+        assert_eq!(sanitize_chat_message("a\n b\r c"), "a b c");
     }
 }

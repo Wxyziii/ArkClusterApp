@@ -106,89 +106,6 @@ fn slot_role_label(key: &str) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct OfficialMap {
-    id: &'static str,
-    name: &'static str,
-    alias: &'static str,
-    ark_map_name: &'static str,
-}
-
-const OFFICIAL_MAPS: &[OfficialMap] = &[
-    OfficialMap {
-        id: "the-island",
-        name: "The Island",
-        alias: "island",
-        ark_map_name: "TheIsland",
-    },
-    OfficialMap {
-        id: "scorched-earth",
-        name: "Scorched Earth",
-        alias: "scorched",
-        ark_map_name: "ScorchedEarth_P",
-    },
-    OfficialMap {
-        id: "aberration",
-        name: "Aberration",
-        alias: "aberration",
-        ark_map_name: "Aberration_P",
-    },
-    OfficialMap {
-        id: "extinction",
-        name: "Extinction",
-        alias: "extinction",
-        ark_map_name: "Extinction",
-    },
-    OfficialMap {
-        id: "genesis-1",
-        name: "Genesis: Part 1",
-        alias: "gen1",
-        ark_map_name: "Genesis",
-    },
-    OfficialMap {
-        id: "genesis-2",
-        name: "Genesis: Part 2",
-        alias: "gen2",
-        ark_map_name: "Gen2",
-    },
-    OfficialMap {
-        id: "the-center",
-        name: "The Center",
-        alias: "center",
-        ark_map_name: "TheCenter",
-    },
-    OfficialMap {
-        id: "ragnarok",
-        name: "Ragnarok",
-        alias: "rag",
-        ark_map_name: "Ragnarok",
-    },
-    OfficialMap {
-        id: "valguero",
-        name: "Valguero",
-        alias: "val",
-        ark_map_name: "Valguero_P",
-    },
-    OfficialMap {
-        id: "crystal-isles",
-        name: "Crystal Isles",
-        alias: "crystal",
-        ark_map_name: "CrystalIsles",
-    },
-    OfficialMap {
-        id: "lost-island",
-        name: "Lost Island",
-        alias: "lost",
-        ark_map_name: "LostIsland",
-    },
-    OfficialMap {
-        id: "fjordur",
-        name: "Fjordur",
-        alias: "fjordur",
-        ark_map_name: "Fjordur",
-    },
-];
-
 async fn status(State(s): State<AppState>) -> impl IntoResponse {
     let res = resources::sample(&s.config.cluster.directory, s.manager_started_at).await;
     let rp = ram_pct(&res);
@@ -386,6 +303,11 @@ async fn server_backup(
 
 async fn travel(State(s): State<AppState>) -> impl IntoResponse {
     let maps = maps_with_status(&s).await;
+    let destinations = maps
+        .iter()
+        .filter(|map| map.launch_ready && !map.is_home)
+        .cloned()
+        .collect::<Vec<_>>();
     let statuses = slot_statuses(&s).await;
     let slots = statuses
         .iter()
@@ -423,6 +345,7 @@ async fn travel(State(s): State<AppState>) -> impl IntoResponse {
         "idleShutdownSecs": s.config.operations.travel_idle_shutdown_secs,
         "idleShutdownProduction": s.config.operations.travel_idle_shutdown_secs == 10800,
         "homeResourceStandby": s.config.resource_policy.home_standby_enabled,
+        "destinations": destinations,
         "recent": history
     }))
 }
@@ -1382,7 +1305,7 @@ async fn maps_with_status(s: &AppState) -> Vec<ArkMap> {
     let shared = config_edit::read_shared(&s.config);
     let (max_players, max_players_source) = max_players_from_shared(&shared);
 
-    for official in OFFICIAL_MAPS {
+    for official in travel_model::official_maps() {
         let cfg = s.config.maps.iter().find(|cfg| {
             !used_config_ids.contains(&cfg.id) && config_matches_official(cfg, official)
         });
@@ -1390,7 +1313,7 @@ async fn maps_with_status(s: &AppState) -> Vec<ArkMap> {
             used_config_ids.insert(cfg.id.clone());
             map_from_config(cfg, max_players, &max_players_source)
         } else {
-            map_from_official(*official)
+            map_from_official(*official, max_players, &max_players_source)
         };
         enrich_map_runtime(&mut map, s).await;
         maps.push(map);
@@ -1409,22 +1332,27 @@ async fn maps_with_status(s: &AppState) -> Vec<ArkMap> {
 }
 
 async fn enrich_map_runtime(map: &mut ArkMap, s: &AppState) {
-    if map.configured {
-        if let Some((slot, slot_key)) = configured_slot_for_map(&s.config, &map.id) {
-            apply_slot_to_map(map, slot, slot_key);
-        } else if let Some((slot, _)) =
-            configured_slot_for_unit(&s.config, &map.config.systemd_unit)
-        {
-            let effective = travel_model::effective_slot_map_id(&s.config, slot);
-            if effective != map.id {
-                map.assignment = "Unassigned".into();
-                map.state = "Offline".into();
-                map.systemd = "assigned to another map".into();
-                map.rcon = "Disconnected".into();
-                map.player_count_source = "unavailable".into();
-                map.next_action = format!("On-demand slot is currently assigned to {effective}");
-                map.systemd_detail = None;
-                return;
+    let active_slot = configured_slot_for_map(&s.config, &map.id);
+    if let Some((slot, slot_key)) = active_slot {
+        apply_slot_to_map(map, slot, slot_key);
+    }
+
+    if map.configured || active_slot.is_some() {
+        if active_slot.is_none() {
+            if let Some((slot, _)) = configured_slot_for_unit(&s.config, &map.config.systemd_unit) {
+                let effective = travel_model::effective_slot_map_id(&s.config, slot);
+                if effective != map.id {
+                    map.assignment = "Available destination".into();
+                    map.state = "Not running".into();
+                    map.systemd = "on-demand slot assigned to another map".into();
+                    map.rcon = "Disconnected".into();
+                    map.player_count_source = "not_running".into();
+                    map.slot_role = "On-demand pool".into();
+                    map.next_action =
+                        format!("Launch-ready destination; current slot is running {effective}");
+                    map.systemd_detail = None;
+                    return;
+                }
             }
         }
         if map.config.systemd_unit.trim().is_empty() {
@@ -1458,6 +1386,9 @@ async fn enrich_map_runtime(map: &mut ArkMap, s: &AppState) {
                     } else {
                         map.players = 0;
                         map.player_count_source = "rcon_unavailable".into();
+                        map.unavailable_reason = runtime.last_error.clone().or_else(|| {
+                            Some("RCON connected but player count is not available yet".into())
+                        });
                     }
                     map.next_action = runtime
                         .last_error
@@ -1506,6 +1437,8 @@ fn map_from_config(cfg: &MapConfig, max_players: u32, max_players_source: &str) 
         is_home: cfg.assignment.eq_ignore_ascii_case("home"),
         protected: cfg.can_be_home && cfg.assignment.eq_ignore_ascii_case("home"),
         configured: true,
+        launch_ready: !cfg.ark_map_name.trim().is_empty(),
+        unavailable_reason: None,
         slot_id: None,
         slot_role: if cfg.assignment.eq_ignore_ascii_case("home") {
             "Home".into()
@@ -1530,34 +1463,44 @@ fn map_from_config(cfg: &MapConfig, max_players: u32, max_players_source: &str) 
     }
 }
 
-fn map_from_official(official: OfficialMap) -> ArkMap {
+fn map_from_official(
+    official: travel_model::OfficialMapProfile,
+    max_players: u32,
+    max_players_source: &str,
+) -> ArkMap {
     ArkMap {
         id: official.id.into(),
         name: official.name.into(),
         alias: official.alias.into(),
-        role: "Not configured".into(),
-        assignment: "Unassigned".into(),
-        state: "Unavailable".into(),
+        role: "Travel-capable".into(),
+        assignment: "Available destination".into(),
+        state: "Not running".into(),
         players: 0,
-        player_count_source: "not_configured".into(),
-        max_players: 0,
-        max_players_source: "not_configured".into(),
+        player_count_source: "not_running".into(),
+        max_players,
+        max_players_source: if max_players > 0 {
+            max_players_source.into()
+        } else {
+            "unknown".into()
+        },
         ram_mb: 0,
         ram_estimate_mb: 0,
         uptime_mins: 0,
         idle_mins: 0,
-        last_backup: "unavailable".into(),
-        rcon: "Unavailable".into(),
-        systemd: "not configured".into(),
+        last_backup: "not started".into(),
+        rcon: "Disconnected".into(),
+        systemd: "not running".into(),
         restart_required: false,
         cpu_pct: 0,
         save_size_mb: 0,
         is_home: false,
         protected: false,
         configured: false,
+        launch_ready: true,
+        unavailable_reason: None,
         slot_id: None,
-        slot_role: "Not configured".into(),
-        next_action: "Map is official but not configured in this cluster".into(),
+        slot_role: "On-demand pool".into(),
+        next_action: "Launch-ready on-demand destination".into(),
         config: MapConfigSummary {
             systemd_unit: "".into(),
             ark_map_name: official.ark_map_name.into(),
@@ -1565,9 +1508,9 @@ fn map_from_official(official: OfficialMap) -> ArkMap {
             rcon_port: 0,
             game_port: 0,
             slot_priority: 0,
-            auto_shutdown_enabled: false,
+            auto_shutdown_enabled: true,
             can_be_home: false,
-            can_auto_stop_when_empty: false,
+            can_auto_stop_when_empty: true,
             can_enter_standby: false,
             mod_list: Vec::new(),
         },
@@ -1575,7 +1518,7 @@ fn map_from_official(official: OfficialMap) -> ArkMap {
     }
 }
 
-fn config_matches_official(cfg: &MapConfig, official: &OfficialMap) -> bool {
+fn config_matches_official(cfg: &MapConfig, official: &travel_model::OfficialMapProfile) -> bool {
     let official_keys = [
         official.id,
         official.name,
@@ -1654,6 +1597,8 @@ fn apply_config_to_map(map: &mut ArkMap, cfg: &MapConfig) {
     };
     map.is_home = cfg.assignment.eq_ignore_ascii_case("home");
     map.protected = map.is_home && cfg.can_be_home;
+    map.launch_ready = !cfg.ark_map_name.trim().is_empty();
+    map.unavailable_reason = None;
     map.config = MapConfigSummary {
         systemd_unit: cfg.systemd_unit.clone(),
         ark_map_name: cfg.ark_map_name.clone(),
@@ -1772,5 +1717,28 @@ fn systemd_summary(maps: &[ArkMap]) -> serde_json::Value {
             "failedUnits": failed,
             "checkedUnits": statuses.len()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn official_destination_is_launch_ready_not_unavailable() {
+        let profile = travel_model::official_maps()
+            .iter()
+            .copied()
+            .find(|map| map.id == "scorched-earth")
+            .unwrap();
+        let map = map_from_official(profile, 70, "GameUserSettings.ini: MaxPlayers");
+        assert_eq!(map.assignment, "Available destination");
+        assert_eq!(map.state, "Not running");
+        assert_eq!(map.player_count_source, "not_running");
+        assert_eq!(map.max_players, 70);
+        assert!(map.launch_ready);
+        assert!(!map.configured);
+        assert_ne!(map.assignment, "Unassigned");
+        assert_ne!(map.state, "Unavailable");
     }
 }
