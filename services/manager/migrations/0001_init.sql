@@ -1,6 +1,6 @@
--- ARK Smart Cluster Manager initial schema.
--- Runtime handlers read and write these SQLite tables for backups, activity,
--- travel decisions, config snapshots, and mod records.
+-- ARK Smart Cluster Manager — initial schema (Phase 1).
+-- Tables are prepared for future use. Phase 1 still serves mock data from
+-- memory; only the audit_log is written to during this phase (startup events).
 
 CREATE TABLE IF NOT EXISTS servers (
     id              TEXT PRIMARY KEY,
