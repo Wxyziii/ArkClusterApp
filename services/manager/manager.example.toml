@@ -57,6 +57,16 @@ home_stops_only_when_empty = true
 prefer_active_player_maps = true
 auto_restart_home = true
 
+[resource_guard]
+enabled = true
+block_on_unknown_resources = true
+min_available_ram_mb_for_first_travel = 6144
+min_available_ram_mb_for_second_travel = 10240
+max_ram_used_percent_before_travel = 80
+max_swap_used_percent = 25
+min_free_swap_mb = 2048
+min_disk_free_gb = 10
+
 [backup_policy]
 before_shutdown = true
 before_config_save = true

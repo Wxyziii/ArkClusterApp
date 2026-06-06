@@ -25,6 +25,8 @@ pub struct Config {
     #[serde(default)]
     pub paths: PathsConfig,
     pub resource_policy: ResourcePolicy,
+    #[serde(default)]
+    pub resource_guard: ResourceGuardConfig,
     pub backup_policy: BackupPolicy,
     #[serde(default)]
     pub rcon: RconConfig,
@@ -120,6 +122,42 @@ pub struct ResourcePolicy {
     pub home_stops_only_when_empty: bool,
     pub prefer_active_player_maps: bool,
     pub auto_restart_home: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResourceGuardConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub block_on_unknown_resources: bool,
+    #[serde(default = "default_min_available_ram_mb_for_first_travel")]
+    pub min_available_ram_mb_for_first_travel: u32,
+    #[serde(default = "default_min_available_ram_mb_for_second_travel")]
+    pub min_available_ram_mb_for_second_travel: u32,
+    #[serde(default = "default_max_ram_used_percent_before_travel")]
+    pub max_ram_used_percent_before_travel: u8,
+    #[serde(default = "default_max_swap_used_percent")]
+    pub max_swap_used_percent: u8,
+    #[serde(default = "default_min_free_swap_mb")]
+    pub min_free_swap_mb: u32,
+    #[serde(default = "default_min_disk_free_gb")]
+    pub min_disk_free_gb: u32,
+}
+
+impl Default for ResourceGuardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            block_on_unknown_resources: true,
+            min_available_ram_mb_for_first_travel: default_min_available_ram_mb_for_first_travel(),
+            min_available_ram_mb_for_second_travel: default_min_available_ram_mb_for_second_travel(
+            ),
+            max_ram_used_percent_before_travel: default_max_ram_used_percent_before_travel(),
+            max_swap_used_percent: default_max_swap_used_percent(),
+            min_free_swap_mb: default_min_free_swap_mb(),
+            min_disk_free_gb: default_min_disk_free_gb(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -239,6 +277,24 @@ pub struct MapConfig {
 fn default_true() -> bool {
     true
 }
+fn default_min_available_ram_mb_for_first_travel() -> u32 {
+    6 * 1024
+}
+fn default_min_available_ram_mb_for_second_travel() -> u32 {
+    10 * 1024
+}
+fn default_max_ram_used_percent_before_travel() -> u8 {
+    80
+}
+fn default_max_swap_used_percent() -> u8 {
+    25
+}
+fn default_min_free_swap_mb() -> u32 {
+    2 * 1024
+}
+fn default_min_disk_free_gb() -> u32 {
+    10
+}
 fn default_rcon_poll() -> u32 {
     5
 }
@@ -312,6 +368,25 @@ impl Config {
             return Err(inv(
                 "resource_policy.ram_emergency_pct must be <= 100".into()
             ));
+        }
+        let g = &self.resource_guard;
+        if g.max_ram_used_percent_before_travel > 100 {
+            return Err(inv(
+                "resource_guard.max_ram_used_percent_before_travel must be <= 100".into(),
+            ));
+        }
+        if g.max_swap_used_percent > 100 {
+            return Err(inv(
+                "resource_guard.max_swap_used_percent must be <= 100".into()
+            ));
+        }
+        if g.min_available_ram_mb_for_second_travel < g.min_available_ram_mb_for_first_travel {
+            return Err(inv(
+                "resource_guard.min_available_ram_mb_for_second_travel must be >= min_available_ram_mb_for_first_travel".into(),
+            ));
+        }
+        if g.min_disk_free_gb == 0 {
+            return Err(inv("resource_guard.min_disk_free_gb must be > 0".into()));
         }
 
         // --- safe paths ---
@@ -647,6 +722,7 @@ pub(crate) mod tests_support {
                 prefer_active_player_maps: true,
                 auto_restart_home: true,
             },
+            resource_guard: ResourceGuardConfig::default(),
             backup_policy: BackupPolicy {
                 before_shutdown: true,
                 before_config_save: true,
@@ -849,6 +925,14 @@ mod tests {
     fn too_many_travel_slots_rejected() {
         let mut c = base();
         c.resource_policy.max_travel_servers = 1;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_resource_guard_thresholds_rejected() {
+        let mut c = base();
+        c.resource_guard.min_available_ram_mb_for_first_travel = 8192;
+        c.resource_guard.min_available_ram_mb_for_second_travel = 4096;
         assert!(c.validate().is_err());
     }
 

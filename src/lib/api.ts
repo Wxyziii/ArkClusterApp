@@ -128,6 +128,7 @@ export interface ClusterStatus {
     load5?: number;
     load15?: number;
   };
+  resourceGuard?: ResourceGuardStatus;
   players: number | null;
   playerCountSource?: string;
   runningMaps: number;
@@ -163,6 +164,7 @@ export interface ResourcesResponse {
     pressure: { label: string; tone: string };
   };
   thresholds: Record<string, number>;
+  resourceGuard?: ResourceGuardStatus;
   governor: {
     decision: string;
     why: string;
@@ -173,6 +175,25 @@ export interface ResourcesResponse {
   uptime: { managerSecs: number; systemSecs?: number | null };
   loadAverage: { one: number; five: number; fifteen: number };
   perProcess: { map: string; ramMb: number; cpuPct: number }[];
+}
+
+export interface ResourceGuardStatus {
+  enabled: boolean;
+  allowed: boolean;
+  reason: string;
+  activeTravelSlots: number;
+  maxTravelServers: number;
+  sampleSource: string;
+  minAvailableRamMb: number;
+  availableRamMb: number;
+  ramUsedPercent: number;
+  maxRamUsedPercent: number;
+  swapUsedPercent: number;
+  maxSwapUsedPercent: number;
+  freeSwapMb: number;
+  minFreeSwapMb: number;
+  diskFreeGb: number;
+  minDiskFreeGb: number;
 }
 
 export interface TravelSlotState {
@@ -197,6 +218,7 @@ export interface TravelState {
   homeResourceStandby: boolean;
   slots: TravelSlotState[];
   destinations: ArkMap[];
+  resourceGuard?: ResourceGuardStatus;
   recent: unknown[];
   queue: unknown[];
   blockReason?: string | null;

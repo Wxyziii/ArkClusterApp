@@ -131,6 +131,27 @@ pub enum GuardError {
     PlayersOnline,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TravelResourceGuardStatus {
+    pub enabled: bool,
+    pub allowed: bool,
+    pub reason: String,
+    pub active_travel_slots: usize,
+    pub max_travel_servers: u32,
+    pub sample_source: String,
+    pub min_available_ram_mb: u32,
+    pub available_ram_mb: u32,
+    pub ram_used_percent: u32,
+    pub max_ram_used_percent: u8,
+    pub swap_used_percent: u32,
+    pub max_swap_used_percent: u8,
+    pub free_swap_mb: u32,
+    pub min_free_swap_mb: u32,
+    pub disk_free_gb: f64,
+    pub min_disk_free_gb: u32,
+}
+
 impl GuardError {
     pub fn code(&self) -> &'static str {
         match self {
@@ -233,30 +254,129 @@ fn guard_travel_start(
     sample: &ResourceSample,
     active_travel_slots: usize,
 ) -> Result<(), GuardError> {
-    if active_travel_slots >= config.resource_policy.max_travel_servers as usize {
-        return Err(GuardError::ResourcePolicyBlocked(format!(
-            "active travel slot count {active_travel_slots} is already at max {}",
-            config.resource_policy.max_travel_servers
-        )));
+    let status = travel_resource_guard_status(config, sample, active_travel_slots);
+    if status.allowed {
+        Ok(())
+    } else {
+        Err(GuardError::ResourcePolicyBlocked(status.reason))
     }
-    if sample.ram_available_gb < 2.0 {
-        return Err(GuardError::ResourcePolicyBlocked(format!(
-            "available RAM is too low ({:.1} GB)",
-            sample.ram_available_gb
-        )));
+}
+
+pub fn travel_resource_guard_status(
+    config: &Config,
+    sample: &ResourceSample,
+    active_travel_slots: usize,
+) -> TravelResourceGuardStatus {
+    let guard = &config.resource_guard;
+    let max_travel_servers = config.resource_policy.max_travel_servers;
+    let min_available_ram_mb = if active_travel_slots == 0 {
+        guard.min_available_ram_mb_for_first_travel
+    } else {
+        guard.min_available_ram_mb_for_second_travel
+    };
+    let available_ram_mb = gb_to_mb(sample.ram_available_gb);
+    let ram_used_percent = pct_u32(sample.ram_used_gb, sample.ram_total_gb);
+    let swap_used_percent = pct_u32(sample.swap_used_gb, sample.swap_total_gb);
+    let free_swap_mb = gb_to_mb((sample.swap_total_gb - sample.swap_used_gb).max(0.0));
+    let resources_unknown = sample.source != "host" || sample.ram_total_gb <= 0.0;
+
+    let (allowed, reason) = if !guard.enabled {
+        (true, "Resource guard disabled by config.".into())
+    } else if active_travel_slots >= max_travel_servers as usize {
+        (
+            false,
+            format!(
+                "Travel rejected: active travel slot count {active_travel_slots} is already at max {max_travel_servers}."
+            ),
+        )
+    } else if resources_unknown && guard.block_on_unknown_resources {
+        (
+            false,
+            "Travel rejected: resource sample unavailable; refusing to start an on-demand map."
+                .into(),
+        )
+    } else if resources_unknown {
+        (
+            true,
+            "Resource sample unavailable; guard skipped by config.".into(),
+        )
+    } else if available_ram_mb < min_available_ram_mb {
+        (
+            false,
+            format!(
+                "Travel rejected: not enough available RAM ({available_ram_mb} MB available, need {min_available_ram_mb} MB)."
+            ),
+        )
+    } else if ram_used_percent > guard.max_ram_used_percent_before_travel as u32 {
+        (
+            false,
+            format!(
+                "Travel rejected: RAM usage is too high ({ram_used_percent}% used, max {}%).",
+                guard.max_ram_used_percent_before_travel
+            ),
+        )
+    } else if swap_used_percent > guard.max_swap_used_percent as u32 {
+        (
+            false,
+            format!(
+                "Travel rejected: swap usage is too high ({swap_used_percent}% used, max {}%).",
+                guard.max_swap_used_percent
+            ),
+        )
+    } else if free_swap_mb < guard.min_free_swap_mb {
+        (
+            false,
+            format!(
+                "Travel rejected: free swap is too low ({free_swap_mb} MB free, need {} MB).",
+                guard.min_free_swap_mb
+            ),
+        )
+    } else if sample.disk_free_gb < guard.min_disk_free_gb as f64 {
+        (
+            false,
+            format!(
+                "Travel rejected: disk free space is too low ({:.1} GB free, need {} GB).",
+                sample.disk_free_gb, guard.min_disk_free_gb
+            ),
+        )
+    } else {
+        (true, "Resource guard passed.".into())
+    };
+
+    TravelResourceGuardStatus {
+        enabled: guard.enabled,
+        allowed,
+        reason,
+        active_travel_slots,
+        max_travel_servers,
+        sample_source: sample.source.clone(),
+        min_available_ram_mb,
+        available_ram_mb,
+        ram_used_percent,
+        max_ram_used_percent: guard.max_ram_used_percent_before_travel,
+        swap_used_percent,
+        max_swap_used_percent: guard.max_swap_used_percent,
+        free_swap_mb,
+        min_free_swap_mb: guard.min_free_swap_mb,
+        disk_free_gb: sample.disk_free_gb,
+        min_disk_free_gb: guard.min_disk_free_gb,
     }
-    if sample.swap_total_gb > 0.0 && sample.swap_used_gb / sample.swap_total_gb > 0.70 {
-        return Err(GuardError::ResourcePolicyBlocked(
-            "swap pressure is too high to start a travel slot".into(),
-        ));
+}
+
+fn pct_u32(used: f64, total: f64) -> u32 {
+    if total <= 0.0 || !used.is_finite() || !total.is_finite() {
+        0
+    } else {
+        ((used / total) * 100.0).round().clamp(0.0, u32::MAX as f64) as u32
     }
-    if sample.disk_free_gb < 10.0 {
-        return Err(GuardError::ResourcePolicyBlocked(format!(
-            "disk free space is too low ({:.1} GB)",
-            sample.disk_free_gb
-        )));
+}
+
+fn gb_to_mb(value: f64) -> u32 {
+    if value <= 0.0 || !value.is_finite() {
+        0
+    } else {
+        (value * 1024.0).round().clamp(0.0, u32::MAX as f64) as u32
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -268,6 +388,18 @@ mod tests {
         let mut c = crate::config::tests_support::base_config();
         c.operations.systemd_control_enabled = true;
         c
+    }
+
+    fn safe_sample() -> ResourceSample {
+        let mut sample = test_data::resources();
+        sample.source = "host".into();
+        sample.ram_used_gb = 5.0;
+        sample.ram_total_gb = 16.0;
+        sample.ram_available_gb = 9.0;
+        sample.swap_used_gb = 0.2;
+        sample.swap_total_gb = 4.0;
+        sample.disk_free_gb = 100.0;
+        sample
     }
 
     #[test]
@@ -346,5 +478,104 @@ mod tests {
             }),
             Err(GuardError::ResourcePolicyBlocked(_))
         ));
+    }
+
+    #[test]
+    fn travel_resource_guard_allows_first_travel_when_safe() {
+        let c = cfg();
+        let status = travel_resource_guard_status(&c, &safe_sample(), 0);
+        assert!(status.allowed);
+        assert_eq!(status.reason, "Resource guard passed.");
+        assert_eq!(status.min_available_ram_mb, 6144);
+    }
+
+    #[test]
+    fn travel_resource_guard_rejects_unknown_resource_sample() {
+        let c = cfg();
+        let status = travel_resource_guard_status(&c, &test_data::resources(), 0);
+        assert!(!status.allowed);
+        assert!(status.reason.contains("resource sample unavailable"));
+    }
+
+    #[test]
+    fn travel_resource_guard_can_skip_unknown_resource_sample_by_config() {
+        let mut c = cfg();
+        c.resource_guard.block_on_unknown_resources = false;
+        let status = travel_resource_guard_status(&c, &test_data::resources(), 0);
+        assert!(status.allowed);
+        assert!(status.reason.contains("skipped by config"));
+    }
+
+    #[test]
+    fn travel_resource_guard_rejects_low_available_ram_for_first_slot() {
+        let c = cfg();
+        let mut sample = safe_sample();
+        sample.ram_available_gb = 5.0;
+        let status = travel_resource_guard_status(&c, &sample, 0);
+        assert!(!status.allowed);
+        assert!(status.reason.contains("not enough available RAM"));
+    }
+
+    #[test]
+    fn travel_resource_guard_rejects_second_slot_with_stricter_ram_floor() {
+        let c = cfg();
+        let sample = safe_sample();
+        assert!(travel_resource_guard_status(&c, &sample, 0).allowed);
+        let status = travel_resource_guard_status(&c, &sample, 1);
+        assert!(!status.allowed);
+        assert_eq!(status.min_available_ram_mb, 10240);
+        assert!(status.reason.contains("not enough available RAM"));
+    }
+
+    #[test]
+    fn travel_resource_guard_rejects_high_ram_used_percent() {
+        let c = cfg();
+        let mut sample = safe_sample();
+        sample.ram_used_gb = 13.0;
+        sample.ram_available_gb = 10.0;
+        let status = travel_resource_guard_status(&c, &sample, 0);
+        assert!(!status.allowed);
+        assert!(status.reason.contains("RAM usage is too high"));
+    }
+
+    #[test]
+    fn travel_resource_guard_rejects_high_swap_used_percent() {
+        let c = cfg();
+        let mut sample = safe_sample();
+        sample.swap_used_gb = 2.0;
+        sample.swap_total_gb = 4.0;
+        let status = travel_resource_guard_status(&c, &sample, 0);
+        assert!(!status.allowed);
+        assert!(status.reason.contains("swap usage is too high"));
+    }
+
+    #[test]
+    fn travel_resource_guard_rejects_low_free_swap() {
+        let mut c = cfg();
+        c.resource_guard.max_swap_used_percent = 90;
+        let mut sample = safe_sample();
+        sample.swap_used_gb = 2.2;
+        sample.swap_total_gb = 4.0;
+        let status = travel_resource_guard_status(&c, &sample, 0);
+        assert!(!status.allowed);
+        assert!(status.reason.contains("free swap is too low"));
+    }
+
+    #[test]
+    fn travel_resource_guard_rejects_low_disk_free_space() {
+        let c = cfg();
+        let mut sample = safe_sample();
+        sample.disk_free_gb = 9.0;
+        let status = travel_resource_guard_status(&c, &sample, 0);
+        assert!(!status.allowed);
+        assert!(status.reason.contains("disk free space is too low"));
+    }
+
+    #[test]
+    fn travel_resource_guard_rejects_max_active_travel_slots() {
+        let c = cfg();
+        let status = travel_resource_guard_status(&c, &safe_sample(), 2);
+        assert!(!status.allowed);
+        assert!(status.reason.contains("already at max"));
     }
 }

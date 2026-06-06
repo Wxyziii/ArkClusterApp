@@ -112,6 +112,9 @@ async fn status(State(s): State<AppState>) -> impl IntoResponse {
     let (label, tone) = pressure_label(rp, &s.config.resource_policy);
     let maps = maps_with_status(&s).await;
     let systemd = systemd_summary(&maps);
+    let active_travel_slots = active_travel_slot_count_from_maps(&maps);
+    let resource_guard =
+        operations::travel_resource_guard_status(&s.config, &res, active_travel_slots);
     let running = maps
         .iter()
         .filter(|m| matches!(m.state.as_str(), "Online" | "Ready" | "Starting"))
@@ -155,6 +158,7 @@ async fn status(State(s): State<AppState>) -> impl IntoResponse {
             "load5": res.load5,
             "load15": res.load15
         },
+        "resourceGuard": resource_guard,
         "players": players,
         "playerCountSource": if player_count_known { "rcon" } else { "unavailable" },
         "runningMaps": running
@@ -309,6 +313,10 @@ async fn travel(State(s): State<AppState>) -> impl IntoResponse {
         .cloned()
         .collect::<Vec<_>>();
     let statuses = slot_statuses(&s).await;
+    let res = resources::sample(&s.config.cluster.directory, s.manager_started_at).await;
+    let active_travel_slots = active_travel_slot_count_from_statuses(&statuses);
+    let resource_guard =
+        operations::travel_resource_guard_status(&s.config, &res, active_travel_slots);
     let slots = statuses
         .iter()
         .map(|snapshot| {
@@ -345,6 +353,7 @@ async fn travel(State(s): State<AppState>) -> impl IntoResponse {
         "idleShutdownSecs": s.config.operations.travel_idle_shutdown_secs,
         "idleShutdownProduction": s.config.operations.travel_idle_shutdown_secs == 10800,
         "homeResourceStandby": s.config.resource_policy.home_standby_enabled,
+        "resourceGuard": resource_guard,
         "destinations": destinations,
         "recent": history
     }))
@@ -408,6 +417,9 @@ async fn resources(State(s): State<AppState>) -> impl IntoResponse {
     let p = &s.config.resource_policy;
 
     let maps = maps_with_status(&s).await;
+    let active_travel_slots = active_travel_slot_count_from_maps(&maps);
+    let resource_guard =
+        operations::travel_resource_guard_status(&s.config, &res, active_travel_slots);
     let player_counts_available = maps
         .iter()
         .filter(|m| m.configured && matches!(m.state.as_str(), "Online" | "Ready" | "Starting"))
@@ -450,6 +462,7 @@ async fn resources(State(s): State<AppState>) -> impl IntoResponse {
             "emptyShutdownMins": p.empty_shutdown_mins
         },
         "governor": decision,
+        "resourceGuard": resource_guard,
         "source": res.source,
         "uptime": {
             "managerSecs": res.manager_uptime_secs,
@@ -899,6 +912,7 @@ async fn read_unit_summary(_unit: &str) -> UnitSummary {
 
 async fn settings(State(s): State<AppState>) -> impl IntoResponse {
     let p = &s.config.resource_policy;
+    let g = &s.config.resource_guard;
     let b = &s.config.backup_policy;
     let maps = maps_with_status(&s).await;
     Json(json!({
@@ -928,6 +942,16 @@ async fn settings(State(s): State<AppState>) -> impl IntoResponse {
             "homeStopsOnlyWhenEmpty": p.home_stops_only_when_empty,
             "preferActivePlayerMaps": p.prefer_active_player_maps,
             "autoRestartHome": p.auto_restart_home
+        },
+        "resourceGuard": {
+            "enabled": g.enabled,
+            "blockOnUnknownResources": g.block_on_unknown_resources,
+            "minAvailableRamMbForFirstTravel": g.min_available_ram_mb_for_first_travel,
+            "minAvailableRamMbForSecondTravel": g.min_available_ram_mb_for_second_travel,
+            "maxRamUsedPercentBeforeTravel": g.max_ram_used_percent_before_travel,
+            "maxSwapUsedPercent": g.max_swap_used_percent,
+            "minFreeSwapMb": g.min_free_swap_mb,
+            "minDiskFreeGb": g.min_disk_free_gb
         },
         "backupPolicy": {
             "beforeShutdown": b.before_shutdown,
@@ -1266,6 +1290,26 @@ async fn slot_statuses(s: &AppState) -> Vec<travel_model::SlotStatusSnapshot> {
         }
     }
     out
+}
+
+fn active_travel_slot_count_from_statuses(statuses: &[travel_model::SlotStatusSnapshot]) -> usize {
+    statuses
+        .iter()
+        .filter(|snapshot| snapshot.key != "home" && snapshot.status.active)
+        .count()
+}
+
+fn active_travel_slot_count_from_maps(maps: &[ArkMap]) -> usize {
+    maps.iter()
+        .filter(|map| {
+            !map.is_home
+                && map
+                    .systemd_detail
+                    .as_ref()
+                    .map(|status| status.active)
+                    .unwrap_or(false)
+        })
+        .count()
 }
 
 #[derive(sqlx::FromRow)]
