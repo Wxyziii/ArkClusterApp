@@ -1,9 +1,7 @@
 //! Audit event model + writer.
 //!
-//! Audit events are persisted to the `activity_log` SQLite table. Phase 1 uses
-//! this for safe operational events (startup, config load, auth failures). The
-//! richer activity feed served at `/api/activity` is still mock data; this
-//! writer is the foundation the future feed will read from.
+//! Audit events are persisted to the `activity_log` SQLite table and are exposed
+//! directly through `/api/activity`.
 //!
 //! IMPORTANT: never pass secrets (API token, Discord token) into an audit
 //! event. `record` logs via `tracing` at info level and the message/detail are

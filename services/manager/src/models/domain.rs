@@ -1,9 +1,9 @@
 //! Domain types mirroring the frontend contract in `src/lib/types.ts`.
 //!
 //! All structs serialize with `camelCase` field names so the SvelteKit UI can
-//! consume them without a translation layer. Phase 1 fills these with mock data.
+//! consume them without a translation layer.
 
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 use crate::models::systemd::UnitStatus;
 
@@ -43,7 +43,10 @@ pub struct ArkMap {
     pub assignment: String,
     pub state: String,
     pub players: u32,
+    pub player_count_source: String,
+    #[serde(serialize_with = "zero_as_null")]
     pub max_players: u32,
+    pub max_players_source: String,
     pub ram_mb: u32,
     pub ram_estimate_mb: u32,
     pub uptime_mins: u32,
@@ -56,10 +59,25 @@ pub struct ArkMap {
     pub save_size_mb: u32,
     pub is_home: bool,
     pub protected: bool,
+    pub configured: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slot_id: Option<String>,
+    pub slot_role: String,
     pub next_action: String,
     pub config: MapConfigSummary,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub systemd_detail: Option<UnitStatus>,
+}
+
+fn zero_as_null<S>(value: &u32, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if *value == 0 {
+        serializer.serialize_none()
+    } else {
+        serializer.serialize_some(value)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

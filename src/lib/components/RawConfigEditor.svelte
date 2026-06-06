@@ -8,7 +8,7 @@
   }: { filename: string; value: string; original: string } = $props();
 
   let dirty = $derived(value !== original);
-  // crude mock syntax warning: lines without '=' that aren't section headers/blank
+  // Basic syntax warning: lines without '=' that are not section headers/blank.
   let warnings = $derived(
     value
       .split('\n')
@@ -34,7 +34,7 @@
   {/if}
   {#if dirty}
     <div class="border-t border-[#2a2a2a] bg-[#0a0a0a]/60 p-3">
-      <p class="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-[#8c8c8c]">Diff preview (mock)</p>
+      <p class="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-[#8c8c8c]">Diff preview</p>
       <pre class="overflow-x-auto rounded bg-[#0a0a0a] p-2 font-mono text-[11px]"><span class="text-[#b5544f]">- {original.split('\n').length} lines (saved)</span>
 <span class="text-[#7c9a82]">+ {value.split('\n').length} lines (editing)</span></pre>
     </div>

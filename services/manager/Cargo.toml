@@ -2,7 +2,7 @@
 name = "ark-manager"
 version = "0.1.0"
 edition = "2021"
-description = "ARK Smart Cluster Manager backend (Phase 1: safe skeleton, API contract, mock data)"
+description = "ARK Smart Cluster Manager backend"
 license = "MIT"
 
 [[bin]]

@@ -262,7 +262,7 @@ fn guard_travel_start(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mock;
+    use crate::test_data;
 
     fn cfg() -> Config {
         let mut c = crate::config::tests_support::base_config();
@@ -288,7 +288,7 @@ mod tests {
                 slot,
                 action: ServerAction::Stop,
                 req: &req,
-                sample: &mock::resources(),
+                sample: &test_data::resources(),
                 active_travel_slots: 0,
                 player_count: 0,
             }),
@@ -313,7 +313,7 @@ mod tests {
                 slot,
                 action: ServerAction::Restart,
                 req: &req,
-                sample: &mock::resources(),
+                sample: &test_data::resources(),
                 active_travel_slots: 0,
                 player_count: 0,
             }),
@@ -325,7 +325,7 @@ mod tests {
     fn travel_start_resource_blocked() {
         let c = cfg();
         let slot = c.slots.as_ref().unwrap().travel_a.as_ref().unwrap();
-        let mut sample = mock::resources();
+        let mut sample = test_data::resources();
         sample.ram_available_gb = 0.5;
         let req = ActionRequest {
             confirm: false,

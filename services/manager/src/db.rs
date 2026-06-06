@@ -2,8 +2,7 @@
 //!
 //! The DB file is created if missing (with parent dirs). Migrations from the
 //! `migrations/` directory are embedded at compile time and applied on startup.
-//! Phase 1 mostly serves mock data, but the schema is prepared for future use
-//! and the audit writer already persists rows here.
+//! Runtime handlers read backup/activity/config/mod rows from this database.
 
 use std::path::Path;
 

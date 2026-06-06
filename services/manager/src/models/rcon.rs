@@ -44,7 +44,7 @@ pub struct RconEndpoint {
 }
 
 impl RconEndpoint {
-    pub fn mock(map_id: &str, host: &str, port: u16, connected: bool, players: u32) -> Self {
+    pub fn test_endpoint(map_id: &str, host: &str, port: u16, connected: bool, players: u32) -> Self {
         Self {
             map_id: map_id.to_string(),
             host: host.to_string(),

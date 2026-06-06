@@ -34,8 +34,8 @@
       </span>
     {/if}
   {:else}
-    <span class="font-medium">Showing mock data — backend unavailable.</span>
+    <span class="font-medium">Backend unavailable.</span>
     {#if error}<span class="font-mono text-[10px] text-[#8c8c8c]">({error})</span>{/if}
-    <span class="text-[10px] text-[#8c8c8c]">Start the Rust manager and set VITE_ARK_API_* to go live.</span>
+    <span class="text-[10px] text-[#8c8c8c]">Start the Rust manager and provide the frontend API token.</span>
   {/if}
 </div>

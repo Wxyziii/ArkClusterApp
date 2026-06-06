@@ -1,91 +1,112 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { PageHeader, Card, BackupTable, Button, ConfirmActionDialog, SafetyWarningPanel, PolicyCard } from '$lib/components';
-  import * as mock from '$lib/data/mock';
-  import { api, loadWithFallback, type Capabilities } from '$lib/api';
-  import type { Backup } from '$lib/types';
+  import { api, type Capabilities } from '$lib/api';
+  import type { Backup, LogEvent } from '$lib/types';
 
-  let confirmOpen = $state(false);
-  let pending = $state<{ action: string; backup: Backup } | null>(null);
-  let backups = $state<Backup[]>(mock.backups);
-  let backupPolicy = $state<Record<string, unknown>>(mock.backupPolicy);
+  let backups = $state<Backup[]>([]);
+  let activity = $state<LogEvent[]>([]);
   let capabilities = $state<Capabilities | null>(null);
-  let fromFallback = $state(false);
+  let error = $state<string | null>(null);
+  let loading = $state(true);
+  let source = $state('sqlite');
+  let filter = $state('All');
 
-  let filter = $state<'all' | 'success' | 'running' | 'failed'>('all');
-  let shown = $derived(filter === 'all' ? backups : backups.filter((b) => b.status === filter));
+  const filters = ['All', 'Systemd', 'Backup', 'Config', 'Mod', 'Travel', 'RCON', 'Discord', 'Errors'];
+  const visibleActivity = $derived(
+    activity.filter((row) => {
+      if (filter === 'All') return true;
+      if (filter === 'Errors') return row.severity === 'error' || row.severity === 'warn';
+      return row.source === filter;
+    })
+  );
 
-  onMount(async () => {
-    const [bk, caps] = await Promise.all([
-      loadWithFallback(() => api.backups(), { backups: mock.backups, policy: mock.backupPolicy }),
-      loadWithFallback(() => api.capabilities(), null)
-    ]);
-    backups = bk.data.backups;
-    backupPolicy = bk.data.policy;
-    if (caps.data) capabilities = caps.data;
-    fromFallback = bk.fromFallback || caps.fromFallback;
-  });
+  onMount(load);
 
-  function handle(action: string, backup: Backup) {
-    if (action === 'restore' || action === 'delete') {
-      pending = { action, backup };
-      confirmOpen = true;
+  async function load() {
+    loading = true;
+    error = null;
+    try {
+      const [bk, act, caps] = await Promise.all([api.backups(), api.activity(), api.capabilities()]);
+      backups = bk.backups;
+      activity = act.activity;
+      source = act.source;
+      capabilities = caps;
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'API request failed';
+    } finally {
+      loading = false;
     }
   }
-  let isRestore = $derived(pending?.action === 'restore');
 </script>
 
-<PageHeader title="Backups" icon="💾" subtitle="Save, config, mod and cluster-data backups">
-  {#snippet actions()}<Button variant="primary" size="sm" disabled title="Use a map card/detail action to back up a configured slot">Backup now</Button>{/snippet}
-</PageHeader>
-
-{#if fromFallback}
-  <div class="mb-5"><SafetyWarningPanel tone="warn" title="Showing fallback backups">Backend backup records are unavailable.</SafetyWarningPanel></div>
-{/if}
-
-<div class="mb-5">
-  <SafetyWarningPanel tone={capabilities?.backup.enabled ? 'info' : 'warn'} title="Backup capability">
-    {capabilities?.backup.reason ?? 'Loading backup capability.'} Restore and delete remain disabled.
-  </SafetyWarningPanel>
-</div>
-
-<div class="grid grid-cols-1 gap-5 lg:grid-cols-4">
-  <div class="lg:col-span-3">
-    <Card title="Recent backups" icon="🗂️" pad={false}>
-      {#snippet actions()}
-        <div class="flex gap-1">
-          {#each ['all', 'success', 'running', 'failed'] as f (f)}
-            <button class="rounded px-2 py-1 text-[11px] capitalize {filter === f ? 'bg-[#222222] text-[#7c9a82]' : 'text-[#8c8c8c] hover:text-[#ededed]'}" onclick={() => (filter = f as typeof filter)}>{f}</button>
-          {/each}
-        </div>
-      {/snippet}
-      <BackupTable backups={shown} onaction={handle} />
-    </Card>
+<section class="page">
+  <div class="page-head">
+    <div>
+      <h1>Backups/Logs</h1>
+      <p>SQLite backup records and audit/activity rows from the manager.</p>
+    </div>
+    <div class="toolbar">
+      <button class="button" onclick={load} disabled={loading}>{loading ? 'Refreshing' : 'Refresh'}</button>
+    </div>
   </div>
 
-  <PolicyCard title="Backup policy" icon="🛡️" rows={[
-    { label: 'Before shutdown', value: String(backupPolicy.beforeShutdown ?? '') },
-    { label: 'Before config save', value: String(backupPolicy.beforeConfigSave ?? '') },
-    { label: 'Before mod changes', value: String(backupPolicy.beforeModChange ?? '') },
-    { label: 'Retention', value: String(backupPolicy.retention ?? '') },
-    { label: 'Real backup execution', value: !!capabilities?.backup.enabled }
-  ]} />
-</div>
+  {#if error}<div class="notice error">{error}</div>{/if}
 
-<ConfirmActionDialog
-  bind:open={confirmOpen}
-  title="{isRestore ? 'Restore' : 'Delete'} backup — {pending?.backup.map}?"
-  tone="danger"
-  confirmLabel={isRestore ? 'Restore backup' : 'Delete backup'}
-  requirePhrase={isRestore ? 'RESTORE' : undefined}
->
-  {#snippet body()}
-    {#if isRestore}
-      <SafetyWarningPanel tone="danger" title="Restore overwrites current world data">
-        Restoring <strong>{pending?.backup.map}</strong> ({pending?.backup.created}) will stop the map, replace its current save with this backup, then restart. Current progress since this backup will be lost. A safety backup of the current state is taken first.
-      </SafetyWarningPanel>
-    {:else}
-      <p>Permanently delete the <strong>{pending?.backup.type}</strong> backup of <strong>{pending?.backup.map}</strong> from {pending?.backup.created}? This cannot be undone.</p>
-    {/if}
-  {/snippet}
-</ConfirmActionDialog>
+  <div class="grid cols-4">
+    <div class="panel"><div class="panel-body metric"><span>Backups</span><strong>{backups.length}</strong><span>sqlite rows</span></div></div>
+    <div class="panel"><div class="panel-body metric"><span>Activity</span><strong>{activity.length}</strong><span>{source}</span></div></div>
+    <div class="panel"><div class="panel-body metric"><span>Backup writes</span><strong>{capabilities?.backup.available ? 'Available' : 'Disabled'}</strong><span>{capabilities?.backup.reason ?? 'unknown'}</span></div></div>
+    <div class="panel"><div class="panel-body metric"><span>Config writes</span><strong>{capabilities?.configWrites.available ? 'Available' : 'Disabled'}</strong><span>{capabilities?.configWrites.reason ?? 'unknown'}</span></div></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h2>Backup Records</h2><span class="chip">{backups.length} rows</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Created</th><th>Map</th><th>Type</th><th>Status</th><th>Size</th><th>Path</th></tr></thead>
+        <tbody>
+          {#each backups as backup (backup.id)}
+            <tr>
+              <td class="mono">{backup.createdAt ?? backup.created}</td>
+              <td>{backup.map}</td>
+              <td>{backup.type}</td>
+              <td><span class="chip {backup.status === 'success' ? 'green' : backup.status === 'failed' ? 'red' : 'amber'}">{backup.status}</span></td>
+              <td>{backup.sizeMb} MB</td>
+              <td class="mono">{backup.path ?? ''}</td>
+            </tr>
+          {:else}
+            <tr><td colspan="6">No backup rows are present.</td></tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h2>Activity Log</h2>
+      <select style="max-width:180px" bind:value={filter}>
+        {#each filters as option}<option>{option}</option>{/each}
+      </select>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Time</th><th>Severity</th><th>Source</th><th>Actor</th><th>Target</th><th>Message</th></tr></thead>
+        <tbody>
+          {#each visibleActivity as row (row.id)}
+            <tr>
+              <td class="mono">{row.ts}</td>
+              <td><span class="chip {row.severity === 'error' ? 'red' : row.severity === 'warn' ? 'amber' : 'green'}">{row.severity}</span></td>
+              <td>{row.source}</td>
+              <td>{row.actor}</td>
+              <td>{row.targetMap}</td>
+              <td><strong>{row.message}</strong><div class="muted">{row.detail}</div></td>
+            </tr>
+          {:else}
+            <tr><td colspan="6">No activity rows match this filter.</td></tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>

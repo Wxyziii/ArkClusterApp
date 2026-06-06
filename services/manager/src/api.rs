@@ -1,5 +1,6 @@
 //! HTTP API. Versioned routes under `/api`, all behind Bearer auth (mounted by
-//! the caller). Every handler returns realistic mock data matching the UI.
+//! the caller). Live handlers return host/config/database data only; unknown
+//! data is reported as unavailable instead of guessed.
 //!
 //! Mutating routes are guarded by operation flags, confirmation checks, and
 //! audit entries so the API cannot touch the host by accident.
@@ -11,15 +12,14 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashSet;
 
 use crate::config::{MapConfig, ServerSlot};
-use crate::mock;
 use crate::models::audit::{self, AuditEvent, Severity};
 use crate::models::backup;
-use crate::models::domain::{ArkMap, MapConfigSummary};
+use crate::models::domain::{ArkMap, ConfigField, MapConfigSummary};
 use crate::models::governor;
 use crate::models::operations::{self, ActionRequest, GuardError, ServerAction, SystemdGuardInput};
-use crate::models::rcon::{RconEndpoint, RconListener};
 use crate::models::resources;
 use crate::models::systemd::UnitStatus;
 use crate::models::{config_edit, maintenance, mods as mod_ops, runtime, travel as travel_model};
@@ -98,6 +98,97 @@ fn pressure_label(
     }
 }
 
+fn slot_role_label(key: &str) -> &'static str {
+    if key == "home" {
+        "Home"
+    } else {
+        "On-demand"
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OfficialMap {
+    id: &'static str,
+    name: &'static str,
+    alias: &'static str,
+    ark_map_name: &'static str,
+}
+
+const OFFICIAL_MAPS: &[OfficialMap] = &[
+    OfficialMap {
+        id: "the-island",
+        name: "The Island",
+        alias: "island",
+        ark_map_name: "TheIsland",
+    },
+    OfficialMap {
+        id: "scorched-earth",
+        name: "Scorched Earth",
+        alias: "scorched",
+        ark_map_name: "ScorchedEarth_P",
+    },
+    OfficialMap {
+        id: "aberration",
+        name: "Aberration",
+        alias: "aberration",
+        ark_map_name: "Aberration_P",
+    },
+    OfficialMap {
+        id: "extinction",
+        name: "Extinction",
+        alias: "extinction",
+        ark_map_name: "Extinction",
+    },
+    OfficialMap {
+        id: "genesis-1",
+        name: "Genesis: Part 1",
+        alias: "gen1",
+        ark_map_name: "Genesis",
+    },
+    OfficialMap {
+        id: "genesis-2",
+        name: "Genesis: Part 2",
+        alias: "gen2",
+        ark_map_name: "Gen2",
+    },
+    OfficialMap {
+        id: "the-center",
+        name: "The Center",
+        alias: "center",
+        ark_map_name: "TheCenter",
+    },
+    OfficialMap {
+        id: "ragnarok",
+        name: "Ragnarok",
+        alias: "rag",
+        ark_map_name: "Ragnarok",
+    },
+    OfficialMap {
+        id: "valguero",
+        name: "Valguero",
+        alias: "val",
+        ark_map_name: "Valguero_P",
+    },
+    OfficialMap {
+        id: "crystal-isles",
+        name: "Crystal Isles",
+        alias: "crystal",
+        ark_map_name: "CrystalIsles",
+    },
+    OfficialMap {
+        id: "lost-island",
+        name: "Lost Island",
+        alias: "lost",
+        ark_map_name: "LostIsland",
+    },
+    OfficialMap {
+        id: "fjordur",
+        name: "Fjordur",
+        alias: "fjordur",
+        ark_map_name: "Fjordur",
+    },
+];
+
 async fn status(State(s): State<AppState>) -> impl IntoResponse {
     let res = resources::sample(&s.config.cluster.directory, s.manager_started_at).await;
     let rp = ram_pct(&res);
@@ -108,8 +199,11 @@ async fn status(State(s): State<AppState>) -> impl IntoResponse {
         .iter()
         .filter(|m| matches!(m.state.as_str(), "Online" | "Ready" | "Starting"))
         .count();
+    let player_count_known = maps.iter().any(|m| m.player_count_source == "rcon");
+    let players = player_count_known.then(|| maps.iter().map(|m| m.players).sum::<u32>());
 
     Json(json!({
+        "dataMode": "live",
         "cluster": {
             "name": s.config.cluster.name,
             "id": s.config.cluster.id,
@@ -120,15 +214,17 @@ async fn status(State(s): State<AppState>) -> impl IntoResponse {
         },
         "manager": { "status": "Online", "tone": "green" },
         "tailscale": {
-            // Mock — real Tailscale status is not queried in this phase.
-            "status": "Connected",
-            "tone": "cyan",
+            "status": if s.config.bind_is_private() { "Private bind configured" } else { "Public bind risk" },
+            "tone": if s.config.bind_is_private() { "cyan" } else { "red" },
             "bindPrivate": s.config.bind_is_private(),
-            "bindAddress": s.config.server.bind_address
+            "bindAddress": s.config.server.bind_address,
+            "source": "manager_config",
+            "connected": null
         },
         "discord": {
-            "status": if s.config.discord.enabled { "Online" } else { "Disabled (placeholder)" },
-            "tone": if s.config.discord.enabled { "green" } else { "gray" }
+            "status": if s.config.discord.enabled { "Configured" } else { "Disabled" },
+            "tone": if s.config.discord.enabled { "cyan" } else { "gray" },
+            "source": "manager_config"
         },
         "systemd": systemd,
         "resourcePressure": {
@@ -140,7 +236,8 @@ async fn status(State(s): State<AppState>) -> impl IntoResponse {
             "load5": res.load5,
             "load15": res.load15
         },
-        "players": mock::players().len(),
+        "players": players,
+        "playerCountSource": if player_count_known { "rcon" } else { "unavailable" },
         "runningMaps": running
     }))
 }
@@ -149,7 +246,7 @@ async fn capabilities(State(s): State<AppState>) -> impl IntoResponse {
     let source = if cfg!(target_os = "linux") {
         "host"
     } else {
-        "fallback"
+        "unavailable"
     };
     Json(operations::capabilities(&s.config, source))
 }
@@ -161,11 +258,15 @@ async fn servers(State(s): State<AppState>) -> impl IntoResponse {
 async fn server_detail(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
     match maps_with_status(&s).await.into_iter().find(|m| m.id == id) {
         Some(map) => {
-            let players: Vec<_> = mock::players()
-                .into_iter()
-                .filter(|p| p.map == map.name)
-                .collect();
-            Json(json!({ "server": map, "players": players })).into_response()
+            let player_count_source = map.player_count_source.clone();
+            Json(json!({
+                "server": map,
+                "players": [],
+                "playerCountSource": player_count_source,
+                "available": false,
+                "reason": "RCON player polling is not connected"
+            }))
+            .into_response()
         }
         None => (
             StatusCode::NOT_FOUND,
@@ -271,19 +372,33 @@ async fn server_backup(
 
 async fn travel(State(s): State<AppState>) -> impl IntoResponse {
     let maps = maps_with_status(&s).await;
-    let slot = |name: &str| maps.iter().find(|m| m.assignment == name).cloned();
-    let active = mock::active_travel();
+    let statuses = slot_statuses(&s).await;
+    let slots = statuses
+        .iter()
+        .map(|(slot, key, status, _)| {
+            let current_map = maps.iter().find(|m| m.id == slot.map_key).cloned();
+            json!({
+                "slotId": slot.id,
+                "role": slot_role_label(key),
+                "mapKey": slot.map_key,
+                "map": current_map,
+                "unit": slot.systemd_unit,
+                "systemd": status.state,
+                "active": status.active,
+                "playerCount": null,
+                "playerCountSource": "unavailable",
+                "idleShutdownSecs": s.config.operations.travel_idle_shutdown_secs,
+                "policy": if slot.protected { "protected" } else { "on_demand" }
+            })
+        })
+        .collect::<Vec<_>>();
     let history = travel_model::history(&s.pool).await.unwrap_or_default();
     Json(json!({
-        "slots": {
-            "home": maps.iter().find(|m| m.is_home).cloned(),
-            "travelA": slot("Travel A"),
-            "travelB": slot("Travel B")
-        },
+        "slots": slots,
         "maxTravelServers": s.config.resource_policy.max_travel_servers,
-        "activeRequest": active,
-        "stepper": { "current": 2, "blocked": true, "blockedAt": 2 },
-        "blockReason": "Both travel slots have active players. Request queued until a slot frees or Home leaves Resource Standby.",
+        "activeRequest": null,
+        "stepper": null,
+        "blockReason": null,
         "queue": [],
         "enabled": s.config.operations.travel_scheduler_enabled,
         "idleShutdownSecs": s.config.operations.travel_idle_shutdown_secs,
@@ -341,11 +456,28 @@ async fn resources(State(s): State<AppState>) -> impl IntoResponse {
     let (label, tone) = pressure_label(rp, &s.config.resource_policy);
     let p = &s.config.resource_policy;
 
-    // Player split for governor preview (does NOT actuate anything).
-    let maps = mock::maps();
-    let home_players: u32 = maps.iter().filter(|m| m.is_home).map(|m| m.players).sum();
-    let travel_players: u32 = maps.iter().filter(|m| !m.is_home).map(|m| m.players).sum();
-    let decision = governor::evaluate(p, &res, home_players, travel_players);
+    let maps = maps_with_status(&s).await;
+    let player_counts_available = maps.iter().all(|m| m.player_count_source == "rcon");
+    let decision = if player_counts_available {
+        let home_players: u32 = maps.iter().filter(|m| m.is_home).map(|m| m.players).sum();
+        let travel_players: u32 = maps.iter().filter(|m| !m.is_home).map(|m| m.players).sum();
+        json!(governor::evaluate(p, &res, home_players, travel_players))
+    } else {
+        json!({
+            "decision": "unavailable",
+            "why": "player counts are unavailable because RCON polling is not connected",
+            "examples": [],
+            "policy": {
+                "neverStopWithPlayers": p.never_stop_with_players,
+                "homeStandbyEnabled": p.home_standby_enabled,
+                "homeStopsOnlyWhenEmpty": p.home_stops_only_when_empty,
+                "preferActivePlayerMaps": p.prefer_active_player_maps,
+                "autoRestartHome": p.auto_restart_home,
+                "maxTravelServers": p.max_travel_servers,
+                "emptyShutdownMins": p.empty_shutdown_mins
+            }
+        })
+    };
 
     Json(json!({
         "sample": res,
@@ -387,51 +519,28 @@ async fn runtime_status(State(s): State<AppState>) -> impl IntoResponse {
 async fn backups(State(s): State<AppState>) -> impl IntoResponse {
     let p = &s.config.backup_policy;
     let records = backup::list(&s.pool).await.unwrap_or_default();
-    let backups = if records.is_empty() {
-        mock::backups()
-            .into_iter()
-            .map(|b| {
-                json!({
-                    "id": b.id,
-                    "map": b.map,
-                    "type": b.kind,
-                    "sizeMb": b.size_mb,
-                    "sizeBytes": b.size_mb as u64 * 1024 * 1024,
-                    "created": b.created,
-                    "createdAt": b.created,
-                    "completedAt": null,
-                    "reason": b.reason,
-                    "status": b.status,
-                    "path": "",
-                    "source": "mock",
-                    "error": b.error
-                })
+    let backups = records
+        .into_iter()
+        .map(|b| {
+            json!({
+                "id": b.id,
+                "map": b.map_key,
+                "slotId": b.slot_id,
+                "serverId": b.server_id,
+                "type": b.kind,
+                "sizeMb": ((b.size_bytes as f64 / 1024.0 / 1024.0).round() as u64),
+                "sizeBytes": b.size_bytes,
+                "created": b.created_at,
+                "createdAt": b.created_at,
+                "completedAt": b.completed_at,
+                "reason": b.reason,
+                "status": b.status,
+                "path": b.path,
+                "source": "sqlite",
+                "error": b.error
             })
-            .collect::<Vec<_>>()
-    } else {
-        records
-            .into_iter()
-            .map(|b| {
-                json!({
-                    "id": b.id,
-                    "map": b.map_key,
-                    "slotId": b.slot_id,
-                    "serverId": b.server_id,
-                    "type": b.kind,
-                    "sizeMb": ((b.size_bytes as f64 / 1024.0 / 1024.0).round() as u64),
-                    "sizeBytes": b.size_bytes,
-                    "created": b.created_at,
-                    "createdAt": b.created_at,
-                    "completedAt": b.completed_at,
-                    "reason": b.reason,
-                    "status": b.status,
-                    "path": b.path,
-                    "source": "sqlite",
-                    "error": b.error
-                })
-            })
-            .collect::<Vec<_>>()
-    };
+        })
+        .collect::<Vec<_>>();
     Json(json!({
         "backups": backups,
         "policy": {
@@ -450,11 +559,7 @@ async fn activity(State(s): State<AppState>) -> impl IntoResponse {
         let recent = real.iter().take(5).cloned().collect::<Vec<_>>();
         return Json(json!({ "activity": real, "recent": recent, "source": "sqlite" }));
     }
-    Json(json!({
-        "activity": mock::activity_log(),
-        "recent": mock::recent_activity(),
-        "source": "mock"
-    }))
+    Json(json!({ "activity": [], "recent": [], "source": "sqlite", "empty": true }))
 }
 
 async fn rcon_status(State(s): State<AppState>) -> impl IntoResponse {
@@ -462,7 +567,13 @@ async fn rcon_status(State(s): State<AppState>) -> impl IntoResponse {
 }
 
 async fn players() -> impl IntoResponse {
-    Json(json!({ "players": mock::players(), "source": "mock", "rconEnabled": false }))
+    Json(json!({
+        "players": [],
+        "source": "rcon_unavailable",
+        "rconEnabled": false,
+        "available": false,
+        "reason": "RCON player polling is not connected"
+    }))
 }
 
 async fn chat_recent(State(s): State<AppState>) -> impl IntoResponse {
@@ -475,8 +586,9 @@ async fn chat_recent(State(s): State<AppState>) -> impl IntoResponse {
 
 async fn config(State(s): State<AppState>) -> impl IntoResponse {
     let shared = config_edit::read_shared(&s.config);
+    let fields = config_fields_from_shared(&shared);
     Json(json!({
-        "fields": mock::config_fields(),
+        "fields": fields,
         "gameIni": shared.game_ini,
         "gameUserSettingsIni": shared.game_user_settings_ini,
         "shared": shared,
@@ -493,6 +605,64 @@ async fn config_raw(State(s): State<AppState>) -> impl IntoResponse {
         "shared": shared,
         "masked": true
     }))
+}
+
+fn config_fields_from_shared(shared: &config_edit::SharedConfig) -> Vec<ConfigField> {
+    let mut fields = Vec::new();
+    fields.extend(parse_config_fields("Game.ini", &shared.game_ini));
+    fields.extend(parse_config_fields(
+        "GameUserSettings.ini",
+        &shared.game_user_settings_ini,
+    ));
+    fields
+}
+
+fn parse_config_fields(file: &str, raw: &str) -> Vec<ConfigField> {
+    let mut section = "General".to_string();
+    let mut fields = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with(';') || trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            section = trimmed.trim_matches(&['[', ']'][..]).to_string();
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty() || key.to_ascii_lowercase().contains("password") {
+            continue;
+        }
+        let value = value.trim();
+        let (kind, parsed) = parse_config_value(value);
+        fields.push(ConfigField {
+            key: key.to_string(),
+            label: key.to_string(),
+            value: parsed,
+            kind,
+            group: format!("{file} / {section}"),
+            min: None,
+            max: None,
+            step: None,
+            options: None,
+            hint: format!("Read from {file}; restart may be required after changes."),
+            restart_required: true,
+        });
+    }
+    fields
+}
+
+fn parse_config_value(value: &str) -> (String, serde_json::Value) {
+    if value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("false") {
+        ("bool".into(), json!(value.eq_ignore_ascii_case("true")))
+    } else if let Ok(v) = value.parse::<f64>() {
+        ("number".into(), json!(v))
+    } else {
+        ("string".into(), json!(value))
+    }
 }
 
 async fn config_preview(
@@ -595,11 +765,14 @@ async fn mod_lookup(
     }
     Json(json!({
         "workshopId": id,
-        "name": format!("Steam Workshop {}", id),
+        "name": null,
         "url": format!("https://steamcommunity.com/sharedfiles/filedetails/?id={}", id),
         "game": "ARK: Survival Evolved",
         "installAvailable": s.config.operations.mod_management_enabled,
         "mutable": s.config.operations.mod_management_enabled,
+        "metadataSource": "unavailable",
+        "metadataAvailable": false,
+        "reason": "Steam Workshop metadata lookup is not configured in the manager",
         "disabledReason": if s.config.operations.mod_management_enabled { "" } else { "mod management disabled in manager config" }
     }))
     .into_response()
@@ -707,17 +880,20 @@ async fn discord_status(State(s): State<AppState>) -> impl IntoResponse {
             "statusChannel": s.config.discord.status_channel,
             "service": service,
             "lastHeartbeat": if service.active { "service active" } else { "unknown" },
-            "permissionsOk": true,
-            "implemented": true,
+            "permissionsOk": null,
+            "implemented": service.active,
+            "source": "systemd",
             "dashboard": {
                 "category": "ARK Cluster",
                 "channels": ["ark-status", "ark-travel", "ark-players", "ark-logs", "ark-admin"],
                 "stateFile": "/var/lib/ark-cluster-discord-bot/state.json"
             }
         },
-        "commands": mock::discord_commands(),
-        "events": mock::discord_events(),
-        "alertSettings": mock::alert_settings()
+        "commands": [],
+        "events": [],
+        "alertSettings": [],
+        "commandsSource": "unavailable",
+        "eventsSource": "unavailable"
     }))
 }
 
@@ -827,7 +1003,7 @@ async fn settings(State(s): State<AppState>) -> impl IntoResponse {
             "tokenMasked": "••••••••",
             "note": "Token is never logged or returned by the API."
         },
-        "rcon": rcon_overview(),
+        "rcon": crate::models::rcon::status_from_config(&s.config),
         "systemdUnits": maps.iter().map(|m| json!({
             "map": m.name,
             "unit": m.config.systemd_unit,
@@ -836,30 +1012,6 @@ async fn settings(State(s): State<AppState>) -> impl IntoResponse {
             "controlImplemented": s.config.operations.systemd_control_enabled
         })).collect::<Vec<_>>()
     }))
-}
-
-/// RCON model preview (no sockets opened in this phase).
-fn rcon_overview() -> RconListener {
-    let endpoints = mock::maps()
-        .iter()
-        .map(|m| {
-            let mut endpoint = RconEndpoint::mock(
-                &m.id,
-                "127.0.0.1",
-                m.config.rcon_port,
-                m.rcon == "Connected",
-                m.players,
-            );
-            endpoint.last_error = Some("RCON disabled or mock-only".into());
-            endpoint
-        })
-        .collect();
-    RconListener {
-        enabled: false,
-        poll_interval_secs: 5,
-        endpoints,
-        implemented: false,
-    }
 }
 
 async fn server_systemd_action(
@@ -1144,13 +1296,11 @@ async fn slot_statuses(s: &AppState) -> Vec<(ServerSlot, &'static str, UnitStatu
                 .get_status(&slot.systemd_unit)
                 .await
                 .unwrap_or_else(|e| {
-                    UnitStatus::unavailable(&slot.systemd_unit, "fallback", e.to_string())
+                    UnitStatus::unavailable(&slot.systemd_unit, "systemd", e.to_string())
                 });
-            let players = mock::maps()
-                .iter()
-                .find(|m| m.id == slot.map_key)
-                .map(|m| m.players)
-                .unwrap_or(0);
+            // Fail-safe guard: until RCON supplies a real count, active slots are
+            // considered occupied and will not be reused as "empty".
+            let players = if status.active { 1 } else { 0 };
             out.push((slot.clone(), key, status, players));
         }
     }
@@ -1189,36 +1339,74 @@ fn epoch_secs() -> u64 {
 }
 
 async fn maps_with_status(s: &AppState) -> Vec<ArkMap> {
-    let mock_maps = mock::maps();
     let mut maps = Vec::new();
+    let mut used_config_ids = HashSet::new();
+    let shared = config_edit::read_shared(&s.config);
+    let (max_players, max_players_source) = max_players_from_shared(&shared);
+
+    for official in OFFICIAL_MAPS {
+        let cfg = s
+            .config
+            .maps
+            .iter()
+            .find(|cfg| !used_config_ids.contains(&cfg.id) && config_matches_official(cfg, official));
+        let mut map = if let Some(cfg) = cfg {
+            used_config_ids.insert(cfg.id.clone());
+            map_from_config(cfg, max_players, &max_players_source)
+        } else {
+            map_from_official(*official)
+        };
+        enrich_map_runtime(&mut map, s).await;
+        maps.push(map);
+    }
 
     for cfg in &s.config.maps {
-        let mut map = mock_maps
-            .iter()
-            .find(|m| m.id == cfg.id)
-            .cloned()
-            .unwrap_or_else(|| map_from_config(cfg));
-        apply_config_to_map(&mut map, cfg);
-        if let Some((slot, slot_key)) = configured_slot_for_map(&s.config, &cfg.id) {
-            apply_slot_to_map(&mut map, slot, slot_key);
+        if used_config_ids.contains(&cfg.id) {
+            continue;
         }
-
-        let detail = match s.systemd.get_status(&map.config.systemd_unit).await {
-            Ok(status) => status,
-            Err(err) => {
-                UnitStatus::unavailable(&map.config.systemd_unit, "fallback", err.to_string())
-            }
-        };
-        map.systemd = detail.state.clone();
-        map.state = map_state_from_systemd(&map, &detail);
-        map.systemd_detail = Some(detail);
+        let mut map = map_from_config(cfg, max_players, &max_players_source);
+        enrich_map_runtime(&mut map, s).await;
         maps.push(map);
     }
 
     maps
 }
 
-fn map_from_config(cfg: &MapConfig) -> ArkMap {
+async fn enrich_map_runtime(map: &mut ArkMap, s: &AppState) {
+    if map.configured {
+        if let Some((slot, slot_key)) = configured_slot_for_map(&s.config, &map.id) {
+            apply_slot_to_map(map, slot, slot_key);
+        }
+        if map.config.systemd_unit.trim().is_empty() {
+            map.systemd = "unavailable".into();
+            map.systemd_detail = Some(UnitStatus::unavailable("", "config", "systemd unit not configured"));
+        } else {
+            let detail = match s.systemd.get_status(&map.config.systemd_unit).await {
+                Ok(status) => status,
+                Err(err) => UnitStatus::unavailable(
+                    &map.config.systemd_unit,
+                    "systemd",
+                    err.to_string(),
+                ),
+            };
+            map.systemd = detail.state.clone();
+            map.state = map_state_from_systemd(map, &detail);
+            if let Some(memory) = detail.memory_current_bytes {
+                map.ram_mb = (memory / 1024 / 1024) as u32;
+            }
+            map.systemd_detail = Some(detail);
+        }
+        map.rcon = if s.config.operations.rcon_enabled && s.config.rcon.enabled {
+            "Unavailable".into()
+        } else {
+            "Disabled".into()
+        };
+    } else {
+        map.systemd_detail = None;
+    }
+}
+
+fn map_from_config(cfg: &MapConfig, max_players: u32, max_players_source: &str) -> ArkMap {
     ArkMap {
         id: cfg.id.clone(),
         name: cfg.name.clone(),
@@ -1231,7 +1419,9 @@ fn map_from_config(cfg: &MapConfig) -> ArkMap {
         assignment: cfg.assignment.clone(),
         state: "Unknown".into(),
         players: 0,
-        max_players: 20,
+        player_count_source: "unavailable".into(),
+        max_players,
+        max_players_source: max_players_source.into(),
         ram_mb: 0,
         ram_estimate_mb: 0,
         uptime_mins: 0,
@@ -1244,6 +1434,13 @@ fn map_from_config(cfg: &MapConfig) -> ArkMap {
         save_size_mb: 0,
         is_home: cfg.assignment.eq_ignore_ascii_case("home"),
         protected: cfg.can_be_home && cfg.assignment.eq_ignore_ascii_case("home"),
+        configured: true,
+        slot_id: None,
+        slot_role: if cfg.assignment.eq_ignore_ascii_case("home") {
+            "Home".into()
+        } else {
+            "On-demand".into()
+        },
         next_action: "Read-only status; control disabled in this phase".into(),
         config: MapConfigSummary {
             systemd_unit: cfg.systemd_unit.clone(),
@@ -1260,6 +1457,116 @@ fn map_from_config(cfg: &MapConfig) -> ArkMap {
         },
         systemd_detail: None,
     }
+}
+
+fn map_from_official(official: OfficialMap) -> ArkMap {
+    ArkMap {
+        id: official.id.into(),
+        name: official.name.into(),
+        alias: official.alias.into(),
+        role: "Not configured".into(),
+        assignment: "Unassigned".into(),
+        state: "Unavailable".into(),
+        players: 0,
+        player_count_source: "not_configured".into(),
+        max_players: 0,
+        max_players_source: "not_configured".into(),
+        ram_mb: 0,
+        ram_estimate_mb: 0,
+        uptime_mins: 0,
+        idle_mins: 0,
+        last_backup: "unavailable".into(),
+        rcon: "Unavailable".into(),
+        systemd: "not configured".into(),
+        restart_required: false,
+        cpu_pct: 0,
+        save_size_mb: 0,
+        is_home: false,
+        protected: false,
+        configured: false,
+        slot_id: None,
+        slot_role: "Not configured".into(),
+        next_action: "Map is official but not configured in this cluster".into(),
+        config: MapConfigSummary {
+            systemd_unit: "".into(),
+            ark_map_name: official.ark_map_name.into(),
+            query_port: 0,
+            rcon_port: 0,
+            game_port: 0,
+            slot_priority: 0,
+            auto_shutdown_enabled: false,
+            can_be_home: false,
+            can_auto_stop_when_empty: false,
+            can_enter_standby: false,
+            mod_list: Vec::new(),
+        },
+        systemd_detail: None,
+    }
+}
+
+fn config_matches_official(cfg: &MapConfig, official: &OfficialMap) -> bool {
+    let official_keys = [
+        official.id,
+        official.name,
+        official.alias,
+        official.ark_map_name,
+    ]
+    .into_iter()
+    .map(normalize_key)
+    .collect::<Vec<_>>();
+    [
+        cfg.id.as_str(),
+        cfg.name.as_str(),
+        cfg.alias.as_str(),
+        cfg.ark_map_name.as_str(),
+    ]
+    .into_iter()
+    .map(normalize_key)
+    .any(|key| official_keys.iter().any(|official| official == &key))
+}
+
+fn max_players_from_shared(shared: &config_edit::SharedConfig) -> (u32, String) {
+    for (file, raw) in [
+        ("GameUserSettings.ini", shared.game_user_settings_ini.as_str()),
+        ("Game.ini", shared.game_ini.as_str()),
+    ] {
+        if let Some(value) = parse_max_players(raw) {
+            return (value, format!("{file}: MaxPlayers"));
+        }
+    }
+    (0, "unknown".into())
+}
+
+fn parse_max_players(raw: &str) -> Option<u32> {
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(';') || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let key = key.trim().to_ascii_lowercase();
+        if matches!(
+            key.as_str(),
+            "maxplayers" | "maxplayersoverride" | "maxplayersallowed"
+        ) {
+            if let Ok(parsed) = value.trim().parse::<u32>() {
+                if parsed > 0 {
+                    return Some(parsed);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn normalize_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
 }
 
 fn apply_config_to_map(map: &mut ArkMap, cfg: &MapConfig) {
@@ -1301,15 +1608,11 @@ fn configured_slot_for_map<'a>(
 }
 
 fn apply_slot_to_map(map: &mut ArkMap, slot: &ServerSlot, slot_key: &str) {
-    map.assignment = match slot_key {
-        "home" => "Home",
-        "travel_a" => "Travel A",
-        "travel_b" => "Travel B",
-        _ => &slot.label,
-    }
-    .into();
+    map.assignment = slot_role_label(slot_key).into();
     map.is_home = slot_key == "home";
     map.protected = slot.protected;
+    map.slot_id = Some(slot.id.clone());
+    map.slot_role = slot_role_label(slot_key).into();
     map.config.systemd_unit = slot.systemd_unit.clone();
     map.config.game_port = slot.game_port;
     map.config.query_port = slot.query_port;
@@ -1339,7 +1642,7 @@ fn systemd_summary(maps: &[ArkMap]) -> serde_json::Value {
         .filter_map(|m| m.systemd_detail.as_ref())
         .collect();
     if statuses.is_empty() {
-        return json!({ "status": "Unavailable", "tone": "gray", "available": false, "source": "fallback" });
+        return json!({ "status": "Unavailable", "tone": "gray", "available": false, "source": "unavailable" });
     }
     let unavailable = statuses.iter().filter(|st| st.error.is_some()).count();
     let active = statuses.iter().filter(|st| st.active).count();

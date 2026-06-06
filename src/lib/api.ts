@@ -1,17 +1,7 @@
-// API client for the Rust manager backend.
-//
-// The UI is designed to keep working with no backend: every call has a mock
-// fallback (see `loadWithFallback`). Configure the backend via env vars:
-//   VITE_ARK_API_BASE   default http://100.68.7.42:8788
-//   VITE_ARK_API_TOKEN  Bearer token for /api/* (matches manager.toml)
-// See `.env.example`.
-
 import type { ArkMap, Backup, ConfigField, LogEvent, Mod, Player, ResourceSample } from '$lib/types';
 
-const BASE: string =
-  (import.meta.env.VITE_ARK_API_BASE as string | undefined)?.replace(/\/$/, '') ??
-  'http://100.68.7.42:8788';
-const TOKEN: string = (import.meta.env.VITE_ARK_API_TOKEN as string | undefined) ?? '';
+const BASE = ((import.meta.env.VITE_ARK_API_BASE as string | undefined) ?? '').replace(/\/$/, '');
+const TOKEN = (import.meta.env.VITE_ARK_API_TOKEN as string | undefined) ?? '';
 const DEFAULT_TIMEOUT_MS = 8000;
 
 export class ApiError extends Error {
@@ -26,42 +16,33 @@ export class ApiError extends Error {
   }
 }
 
-/** Authenticated GET against the manager API. Throws ApiError on failure. */
 export async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const timeout = timeoutSignal(signal);
-  let res: Response;
-  try {
-    res = await fetch(`${BASE}/api${path}`, {
-      headers: TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {},
-      signal: timeout.signal
-    });
-  } catch (e) {
-    // Network error / backend down.
-    throw new ApiError(0, e instanceof Error ? e.message : 'network error', 'NETWORK_ERROR');
-  } finally {
-    timeout.cancel();
-  }
-  if (!res.ok) {
-    throw await apiErrorFromResponse(res);
-  }
-  return (await res.json()) as T;
+  return request<T>('GET', path, undefined, signal);
 }
 
-export async function apiPost<T>(
+export async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  return request<T>('POST', path, body, signal);
+}
+
+async function request<T>(
+  method: 'GET' | 'POST',
   path: string,
-  body: unknown,
+  body?: unknown,
   signal?: AbortSignal
 ): Promise<T> {
+  if (!TOKEN) {
+    throw new ApiError(0, 'Missing VITE_ARK_API_TOKEN in frontend environment', 'AUTH_MISSING');
+  }
   const timeout = timeoutSignal(signal);
   let res: Response;
   try {
     res = await fetch(`${BASE}/api${path}`, {
-      method: 'POST',
+      method,
       headers: {
-        'Content-Type': 'application/json',
-        ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {})
+        Authorization: `Bearer ${TOKEN}`,
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' })
       },
-      body: JSON.stringify(body),
+      body: body === undefined ? undefined : JSON.stringify(body),
       signal: timeout.signal
     });
   } catch (e) {
@@ -75,7 +56,6 @@ export async function apiPost<T>(
   return (await res.json()) as T;
 }
 
-/** Unauthenticated health check. Returns true if the backend is reachable. */
 export async function health(signal?: AbortSignal): Promise<boolean> {
   const timeout = timeoutSignal(signal);
   try {
@@ -105,39 +85,13 @@ async function apiErrorFromResponse(res: Response): Promise<ApiError> {
     message = data?.error?.message ?? data?.reason ?? data?.message ?? message;
     code = data?.error?.code ?? data?.status ?? code;
   } catch {
-    // keep status text
+    // keep HTTP status text
   }
   return new ApiError(res.status, message, code, payload);
 }
 
-export interface Loaded<T> {
-  data: T;
-  /** True when the value came from the local mock fallback, not the backend. */
-  fromFallback: boolean;
-  /** Populated when the backend call failed (and fallback was used). */
-  error: string | null;
-}
-
-/**
- * Run an API fetch but never throw to the UI: on any failure, return the
- * provided mock fallback and flag it. This keeps the dashboard usable when the
- * backend is unavailable.
- */
-export async function loadWithFallback<T>(
-  fetcher: () => Promise<T>,
-  fallback: T
-): Promise<Loaded<T>> {
-  try {
-    return { data: await fetcher(), fromFallback: false, error: null };
-  } catch (e) {
-    const error = e instanceof Error ? e.message : 'unknown error';
-    return { data: fallback, fromFallback: true, error };
-  }
-}
-
-// ---- Typed endpoint helpers (shapes match src/lib/types.ts) ----
-
 export interface ClusterStatus {
+  dataMode?: 'live' | 'demo';
   cluster: {
     name: string;
     id: string;
@@ -147,8 +101,15 @@ export interface ClusterStatus {
     emptyShutdownMins: number;
   };
   manager: { status: string; tone: string };
-  tailscale: { status: string; tone: string; bindPrivate: boolean; bindAddress: string };
-  discord: { status: string; tone: string };
+  tailscale: {
+    status: string;
+    tone: string;
+    bindPrivate: boolean;
+    bindAddress: string;
+    source?: string;
+    connected?: boolean | null;
+  };
+  discord: { status: string; tone: string; source?: string };
   systemd: {
     status: string;
     tone: string;
@@ -167,38 +128,9 @@ export interface ClusterStatus {
     load5?: number;
     load15?: number;
   };
-  players: number;
+  players: number | null;
+  playerCountSource?: string;
   runningMaps: number;
-}
-
-export interface ResourcesResponse {
-  sample: ResourceSample;
-  derived: {
-    ramPct: number;
-    cpuPct: number;
-    swapPct: number;
-    diskPct: number;
-    pressure: { label: string; tone: string };
-  };
-  thresholds: Record<string, number>;
-  governor: {
-    decision: string;
-    why: string;
-    examples: string[];
-    policy: {
-      neverStopWithPlayers: boolean;
-      homeStandbyEnabled: boolean;
-      homeStopsOnlyWhenEmpty: boolean;
-      preferActivePlayerMaps: boolean;
-      autoRestartHome: boolean;
-      maxTravelServers?: number;
-      emptyShutdownMins?: number;
-    };
-  };
-  source: string;
-  uptime: { managerSecs: number; systemSecs?: number | null };
-  loadAverage: { one: number; five: number; fifteen: number };
-  perProcess: { map: string; ramMb: number; cpuPct: number }[];
 }
 
 export interface CapabilityItem {
@@ -221,6 +153,64 @@ export interface Capabilities {
   backendSource: string;
 }
 
+export interface ResourcesResponse {
+  sample: ResourceSample;
+  derived: {
+    ramPct: number;
+    cpuPct: number;
+    swapPct: number;
+    diskPct: number;
+    pressure: { label: string; tone: string };
+  };
+  thresholds: Record<string, number>;
+  governor: {
+    decision: string;
+    why: string;
+    examples: string[];
+    policy: Record<string, unknown>;
+  };
+  source: string;
+  uptime: { managerSecs: number; systemSecs?: number | null };
+  loadAverage: { one: number; five: number; fifteen: number };
+  perProcess: { map: string; ramMb: number; cpuPct: number }[];
+}
+
+export interface TravelSlotState {
+  slotId: string;
+  role: string;
+  mapKey: string;
+  map?: ArkMap | null;
+  unit: string;
+  systemd: string;
+  active: boolean;
+  playerCount: number | null;
+  playerCountSource: string;
+  idleShutdownSecs: number;
+  policy: string;
+}
+
+export interface TravelState {
+  enabled: boolean;
+  idleShutdownSecs: number;
+  idleShutdownProduction: boolean;
+  maxTravelServers: number;
+  homeResourceStandby: boolean;
+  slots: TravelSlotState[];
+  recent: unknown[];
+  queue: unknown[];
+  blockReason?: string | null;
+}
+
+export interface TravelDecision {
+  id: string;
+  accepted: boolean;
+  requestedMap: string;
+  resolvedMap?: string;
+  chosenSlot?: string;
+  status: string;
+  reason: string;
+}
+
 export interface ActionRequest {
   confirm: boolean;
   strongConfirm?: boolean;
@@ -238,40 +228,6 @@ export interface ActionResponse {
   auditEventId?: number | null;
   updatedStatus?: unknown;
   backup?: Backup;
-}
-
-export interface RuntimeStatus {
-  ready: boolean;
-  steamcmd: { ok: boolean; path: string; message: string };
-  arkServer: { ok: boolean; path: string; message: string };
-  sharedConfig: { ok: boolean; path: string; message: string };
-  clusterDir: { ok: boolean; path: string; message: string };
-  backupRoot: { ok: boolean; path: string; message: string };
-  arkRoot: string;
-  serverRoot: string;
-  executable: string;
-}
-
-export interface TravelState {
-  enabled: boolean;
-  idleShutdownSecs: number;
-  idleShutdownProduction: boolean;
-  maxTravelServers: number;
-  homeResourceStandby: boolean;
-  slots: { home?: ArkMap; travelA?: ArkMap; travelB?: ArkMap };
-  recent: unknown[];
-  queue: unknown[];
-  blockReason?: string;
-}
-
-export interface TravelDecision {
-  id: string;
-  accepted: boolean;
-  requestedMap: string;
-  resolvedMap?: string;
-  chosenSlot?: string;
-  status: string;
-  reason: string;
 }
 
 export interface ConfigResponse {
@@ -297,12 +253,12 @@ export interface ModsResponse {
   steamcmdRequired?: boolean;
   restartRequired?: boolean;
   activeModsConfig?: string;
-  testModId?: string;
+  activeModIds?: string[];
 }
 
 export interface ModRecord {
   workshopId: string;
-  name: string;
+  name?: string | null;
   enabled: number | boolean;
   installed: number | boolean;
   loadOrder: number;
@@ -313,20 +269,15 @@ export interface ModRecord {
 
 export interface ModLookupResponse {
   workshopId: string;
-  name: string;
+  name?: string | null;
   url: string;
   game: string;
   installAvailable: boolean;
   mutable: boolean;
+  metadataSource?: string;
+  metadataAvailable?: boolean;
+  reason?: string;
   disabledReason?: string;
-}
-
-export interface MaintenanceStatus {
-  enabled: boolean;
-  steamAppId: string;
-  installPath: string;
-  safeCommand: string;
-  jobs: unknown[];
 }
 
 export interface DiscordStatusResponse {
@@ -335,8 +286,9 @@ export interface DiscordStatusResponse {
     guild: string;
     statusChannel: string;
     lastHeartbeat: string;
-    permissionsOk: boolean;
+    permissionsOk: boolean | null;
     implemented: boolean;
+    source?: string;
     service?: {
       active: boolean;
       enabled: boolean;
@@ -352,44 +304,54 @@ export interface DiscordStatusResponse {
   commands: { cmd?: string; name?: string; desc?: string; access?: string }[];
   events: { id?: string; ts?: string; kind?: string; text?: string }[];
   alertSettings: { key: string; label: string; enabled: boolean }[];
+  commandsSource?: string;
+  eventsSource?: string;
 }
 
 export const api = {
   status: (s?: AbortSignal) => apiGet<ClusterStatus>('/status', s),
-  runtime: (s?: AbortSignal) => apiGet<RuntimeStatus>('/runtime', s),
   capabilities: (s?: AbortSignal) => apiGet<Capabilities>('/capabilities', s),
   servers: (s?: AbortSignal) => apiGet<ArkMap[]>('/servers', s),
   server: (id: string, s?: AbortSignal) =>
-    apiGet<{ server: ArkMap; players: Player[] }>(`/servers/${encodeURIComponent(id)}`, s),
-  resources: (s?: AbortSignal) => apiGet<ResourcesResponse>('/resources', s),
+    apiGet<{ server: ArkMap; players: Player[]; playerCountSource: string; available: boolean; reason: string }>(
+      `/servers/${encodeURIComponent(id)}`,
+      s
+    ),
   travel: (s?: AbortSignal) => apiGet<TravelState>('/travel', s),
-  travelHistory: (s?: AbortSignal) => apiGet<{ history: unknown[] }>('/travel/history', s),
   travelRequest: (body: { map: string; source: string; actor: string }, s?: AbortSignal) =>
     apiPost<TravelDecision>('/travel/request', body, s),
-  serverAction: (id: string, action: 'start' | 'stop' | 'restart' | 'backup', body: ActionRequest, s?: AbortSignal) =>
-    apiPost<ActionResponse>(`/servers/${encodeURIComponent(id)}/actions/${action}`, body, s),
+  serverAction: (
+    id: string,
+    action: 'start' | 'stop' | 'restart' | 'backup',
+    body: ActionRequest,
+    s?: AbortSignal
+  ) => apiPost<ActionResponse>(`/servers/${encodeURIComponent(id)}/actions/${action}`, body, s),
+  resources: (s?: AbortSignal) => apiGet<ResourcesResponse>('/resources', s),
   backups: (s?: AbortSignal) =>
     apiGet<{ backups: Backup[]; policy: Record<string, unknown> }>('/backups', s),
   activity: (s?: AbortSignal) =>
-    apiGet<{ activity: LogEvent[]; recent: LogEvent[] }>('/activity', s),
+    apiGet<{ activity: LogEvent[]; recent: LogEvent[]; source: string; empty?: boolean }>('/activity', s),
   rconStatus: (s?: AbortSignal) => apiGet<Record<string, unknown>>('/rcon/status', s),
-  players: (s?: AbortSignal) => apiGet<{ players: Player[]; source: string; rconEnabled: boolean }>('/players', s),
+  players: (s?: AbortSignal) =>
+    apiGet<{ players: Player[]; source: string; rconEnabled: boolean; available: boolean; reason: string }>(
+      '/players',
+      s
+    ),
   chatRecent: (s?: AbortSignal) => apiGet<Record<string, unknown>>('/chat/recent', s),
   config: (s?: AbortSignal) => apiGet<ConfigResponse>('/config', s),
   configRaw: (s?: AbortSignal) => apiGet<ConfigResponse>('/config/raw', s),
-  configPreview: (body: { file: string; key: string; value: string; confirm?: boolean; reason?: string }, s?: AbortSignal) =>
-    apiPost<Record<string, unknown>>('/config/preview', body, s),
-  configApply: (body: { file: string; key: string; value: string; confirm: boolean; reason?: string }, s?: AbortSignal) =>
-    apiPost<ConfigResponse>('/config/apply', body, s),
+  configApply: (
+    body: { file: string; key: string; value: string; confirm: boolean; reason?: string },
+    s?: AbortSignal
+  ) => apiPost<ConfigResponse>('/config/apply', body, s),
   configVersions: (s?: AbortSignal) => apiGet<{ versions: Record<string, unknown>[] }>('/config/versions', s),
   mods: (s?: AbortSignal) => apiGet<ModsResponse>('/mods', s),
   modLookup: (body: { workshopId?: string; url?: string }, s?: AbortSignal) =>
     apiPost<ModLookupResponse>('/mods/lookup', body, s),
-  modAction: (action: 'add' | 'update' | 'enable' | 'disable' | 'remove', body: { workshopId: string; confirm: boolean }, s?: AbortSignal) =>
-    apiPost<ModsResponse>(`/mods/${action}`, body, s),
-  maintenance: (s?: AbortSignal) => apiGet<MaintenanceStatus>('/maintenance/status', s),
-  maintenanceDryRun: (s?: AbortSignal) =>
-    apiPost<Record<string, unknown>>('/maintenance/ark/update', { dryRun: true, confirm: false, reason: 'web_ui_dry_run' }, s),
-  discordStatus: (s?: AbortSignal) => apiGet<DiscordStatusResponse>('/discord/status', s),
-  settings: (s?: AbortSignal) => apiGet<Record<string, unknown>>('/settings', s)
+  modAction: (
+    action: 'add' | 'update' | 'enable' | 'disable' | 'remove',
+    body: { workshopId: string; confirm: boolean },
+    s?: AbortSignal
+  ) => apiPost<ModsResponse>(`/mods/${action}`, body, s),
+  discordStatus: (s?: AbortSignal) => apiGet<DiscordStatusResponse>('/discord/status', s)
 };

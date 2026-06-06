@@ -177,15 +177,15 @@ impl SystemdController for RealSystemd {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct MockSystemd;
+pub struct TestSystemd;
 
 #[async_trait]
-impl SystemdController for MockSystemd {
+impl SystemdController for TestSystemd {
     async fn get_status(&self, unit: &str) -> Result<UnitStatus, SystemdError> {
         let active = unit.contains("travel-a") || unit.contains("travel-b");
         Ok(UnitStatus {
             unit: unit.to_string(),
-            source: "mock".into(),
+            source: "test".into(),
             exists: true,
             loaded: true,
             state: if active {
@@ -196,7 +196,7 @@ impl SystemdController for MockSystemd {
             active,
             active_state: if active { "active" } else { "inactive" }.into(),
             sub_state: if active { "running" } else { "dead" }.into(),
-            description: Some(format!("Mock ARK unit {unit}")),
+            description: Some(format!("Test ARK unit {unit}")),
             since: None,
             main_pid: None,
             memory_current_bytes: None,
@@ -354,7 +354,7 @@ mod tests {
     fn parses_active_systemctl_show_output() {
         let parsed = parse_systemctl_show(
             "ark-server@travel-a.service",
-            "Id=ark-server@travel-a.service\nLoadState=loaded\nActiveState=active\nSubState=running\nDescription=ARK Travel A\nActiveEnterTimestamp=Wed 2026-06-03 17:00:00 CEST\nMainPID=1234\nMemoryCurrent=987654321\nTasksCurrent=42\n",
+            "Id=ark-server@travel-a.service\nLoadState=loaded\nActiveState=active\nSubState=running\nDescription=ARK On-demand\nActiveEnterTimestamp=Wed 2026-06-03 17:00:00 CEST\nMainPID=1234\nMemoryCurrent=987654321\nTasksCurrent=42\n",
             "systemd",
         );
 
@@ -363,7 +363,7 @@ mod tests {
         assert!(parsed.loaded);
         assert!(parsed.active);
         assert_eq!(parsed.state, "active (running)");
-        assert_eq!(parsed.description.as_deref(), Some("ARK Travel A"));
+        assert_eq!(parsed.description.as_deref(), Some("ARK On-demand"));
         assert_eq!(parsed.main_pid, Some(1234));
         assert_eq!(parsed.memory_current_bytes, Some(987654321));
         assert_eq!(parsed.tasks_current, Some(42));

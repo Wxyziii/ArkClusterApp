@@ -13,8 +13,7 @@ Dark, survival-tech admin dashboard for a private ARK: Survival Evolved smart cl
 ## Repo layout
 ```
 .                      # SvelteKit frontend
-├─ src/lib/api.ts      # backend API client (token + graceful fallback)
-├─ src/lib/data/mock.ts# local fallback mock data
+├─ src/lib/api.ts      # backend API client (token required, live-only)
 └─ services/manager/   # Rust backend (Axum + Tokio + SQLite)
 ```
 
@@ -31,8 +30,8 @@ npm run dev            # http://localhost:5173
 npm run check          # svelte-check (0 errors)
 npm run build          # production build
 ```
-The UI works **without** the backend: each page renders local mock data and shows
-a "backend unavailable" banner if the API call fails.
+The UI does not fabricate backend data. If the backend or frontend token is
+missing, pages show the API/auth error and no local replacement data is used.
 
 ## Run the backend (`services/manager`)
 Requires a Rust toolchain (`cargo`, edition 2021).
@@ -131,7 +130,7 @@ POST /api/servers/:id/actions/stop
 POST /api/servers/:id/actions/restart
 ```
 The client never sends raw unit names. The backend resolves `:id` to configured
-Home / Travel A / Travel B units, validates the unit name, uses `systemctl`
+Home / on-demand units, validates the unit name, uses `systemctl`
 directly with fixed arguments, and writes audit rows for allowed and blocked
 attempts. Stop/restart require confirmation. Home stop is blocked unless
 `allow_home_manual_stop = true`, a strong confirmation is provided, and the
@@ -178,7 +177,7 @@ deploy/systemd/slot.env.example
 ARK: Survival Evolved uses SteamCMD app `376030`, shared install
 `/srv/ark/server`, shared config
 `/srv/ark/server/ShooterGame/Saved/Config/LinuxServer`, and shared cluster dir
-`/srv/ark/clusters/main`. Home / Travel A / Travel B differ only through slot
+`/srv/ark/clusters/main`. Home / on-demand slots differ only through slot
 env files and launch args: map, session, game/query/RCON ports,
 `AltSaveDirectoryName`, cluster id, and safe flags.
 
@@ -208,24 +207,24 @@ reviewed.
 | Endpoint | Returns |
 |----------|---------|
 | `GET /health` | liveness (no auth) |
-| `GET /api/status` | cluster/manager/Tailscale/Discord placeholders + real/fallback resource pressure + systemd availability summary |
+| `GET /api/status` | cluster/manager/config-derived private access + real resource pressure when available + systemd availability summary |
 | `GET /api/capabilities` | guarded operation capability flags and disabled reasons |
-| `GET /api/servers` | configured maps/slots with real/fallback read-only systemd status; players/RCON/restart flags remain mock |
-| `GET /api/servers/:id` | one map + players + detailed read-only systemd status (404 if unknown) |
+| `GET /api/servers` | configured maps plus all official ARK maps; unavailable values are explicit |
+| `GET /api/servers/:id` | one map + source-aware player status + detailed read-only systemd status (404 if unknown) |
 | `POST /api/servers/:id/actions/start` | guarded configured-unit systemd start |
 | `POST /api/servers/:id/actions/stop` | guarded configured-unit systemd stop |
 | `POST /api/servers/:id/actions/restart` | guarded configured-unit systemd restart |
 | `POST /api/servers/:id/actions/backup` | safe configured-path backup |
-| `GET /api/travel` | travel slots, active request, stepper, block reason (mock) |
-| `GET /api/resources` | real Linux or fallback RAM/CPU/load/swap/disk/uptime + governor decision preview + thresholds |
-| `GET /api/backups` | SQLite backup history first, mock fallback if empty |
-| `GET /api/activity` | SQLite audit/activity log first, mock fallback if empty |
+| `GET /api/travel` | Home/on-demand slot state, travel policy, and real history |
+| `GET /api/resources` | real Linux RAM/CPU/load/swap/disk/uptime when available; otherwise explicit unavailable |
+| `GET /api/backups` | SQLite backup history; empty means no rows |
+| `GET /api/activity` | SQLite audit/activity log; empty means no rows |
 | `GET /api/rcon/status` | read-only RCON configuration/status surface |
-| `GET /api/players` | player list, RCON-backed when available, mock otherwise |
-| `GET /api/chat/recent` | recent chat/detected command placeholder |
-| `GET /api/config` | editable config fields + raw `Game.ini`/`GameUserSettings.ini` (mock, read-only) |
-| `GET /api/mods` | installed/active/disabled mods + load order (mock, read-only) |
-| `GET /api/discord/status` | bot status, command list, recent events (mock) |
+| `GET /api/players` | player list only when RCON polling is connected; otherwise unavailable |
+| `GET /api/chat/recent` | unavailable/disabled chat state until RCON chat polling is connected |
+| `GET /api/config` | fields parsed from real masked shared `Game.ini`/`GameUserSettings.ini` |
+| `GET /api/mods` | persisted mod records and ActiveMods-derived IDs when available |
+| `GET /api/discord/status` | bot service/config status; commands/events are unavailable unless queried from runtime |
 | `GET /api/settings` | cluster/private-access/travel/resource/backup/config-mod/security settings |
 
 No destructive `POST`/`PATCH`/`DELETE` routes exist. systemd start/stop/restart,
@@ -250,7 +249,7 @@ logs a warning if it binds to a non-private address. `VITE_ARK_API_*` values are
 bundled into the client, so only point them at a private backend.
 
 ### Slot and systemd config
-T1.1 supports explicit read-only server slots in `manager.toml`:
+The manager supports explicit Home and on-demand server slots in `manager.toml`:
 
 ```toml
 [slots.home]
@@ -266,7 +265,7 @@ home_resource_standby_enabled = true
 
 [slots.travel_a]
 id = "travel-a"
-label = "Travel A"
+label = "On-demand slot 1"
 map_key = "travel-rag"
 systemd_unit = "ark-server@travel-a.service"
 game_port = 7781
@@ -275,7 +274,7 @@ rcon_port = 27021
 
 [slots.travel_b]
 id = "travel-b"
-label = "Travel B"
+label = "On-demand slot 2"
 map_key = "travel-ab"
 systemd_unit = "ark-server@travel-b.service"
 game_port = 7785
@@ -301,71 +300,37 @@ git-ignored).
 ```
 services/manager/
 ├─ manager.example.toml      # documented config template
-├─ migrations/0001_init.sql  # servers, travel_requests, activity_log, backups,
-│                            #   config_versions, mods, settings
+├─ migrations/               # SQLite schema
 └─ src/
    ├─ config.rs   # load + validate (+ tests)
    ├─ db.rs       # SQLite open/create + migrations (+ test)
-   ├─ auth.rs     # Bearer-token middleware (constant-time compare)
-   ├─ api.rs      # /api routes -> host/systemd readers + mock placeholders
-   ├─ mock.rs     # fallback/mock data mirroring src/lib/data/mock.ts
+   ├─ auth.rs     # Bearer-token middleware
+   ├─ api.rs      # /api routes -> host/systemd/config/database data
    ├─ state.rs    # shared app state
    └─ models/     # domain + audit + governor + systemd + rcon models
 ```
 
-## What is real now (T1.2)
-- Linux host resource readings from `/proc/meminfo`, `/proc/stat`,
-  `/proc/loadavg`, `/proc/uptime`, and read-only filesystem stats.
-- Resource API source markers: `host`, `mock`, or `fallback`.
-- Read-only systemd status for configured units, including load/active/sub
-  state, description, timestamps, main PID, memory, tasks, and clear error
-  messages when systemd is unavailable.
-- Config-driven Home, Travel A, and Travel B slot/unit/port mapping.
-- Bearer-token auth for `/api/*`; `/health` remains public.
-- T1.2 operation capability flags exposed to the UI.
-- Guarded systemd action endpoints for configured units only. They are disabled
-  unless `operations.systemd_control_enabled = true`.
-- Manual backup endpoint for configured save/config paths, with SQLite backup
-  records and missing-path failure records.
-- SQLite-backed activity feed when audit rows exist.
-- RCON read-only status/config groundwork with no password exposure.
-
-## Still mock or not implemented
-- ARK start/stop/restart remains disabled in the example/deployed config unless
-  deliberately enabled by the operator.
-- Automatic `!travel` scheduling and Home Resource Standby execution are not implemented.
-- RCON live sockets/player polling/chat polling remain disabled/placeholders
-  unless configured later.
-- Discord bot execution remains disabled/placeholder.
-- Config file writes and raw config editing remain preview-only.
-- Mod downloads, deletes, updates, and load-order mutation remain mock.
-- Backup restore/delete are not implemented.
-
-## Next phase suggestion
-Add guarded systemd control for predefined, validated units only: audited
-start/stop/restart endpoints, explicit Home protection checks, backup/save
-preconditions, and no user-supplied unit names.
+## Current Behavior
+- Linux host resource readings come from `/proc` and filesystem stats when available.
+- Unsupported/unavailable runtime data is returned as unavailable, not replaced.
+- `/api/servers` includes all official ARK maps and marks unconfigured maps as unavailable.
+- Player counts are source-aware and remain unknown unless RCON polling is connected.
+- Backups/activity/config/mods come from SQLite or real config files; empty rows remain empty.
+- Bearer-token auth protects `/api/*`; `/health` remains public.
+- Guarded systemd/backup/config/mod endpoints obey capability flags and confirmation checks.
+- Backup restore/delete and live RCON chat/player polling remain unavailable until implemented.
 
 ## Pages (`src/routes`)
 | Route | Page |
 |-------|------|
-| `/` | Dashboard — cluster health, slots, Home protection, governor, activity, backups |
-| `/maps` | Maps — card/table, action rules, confirm dialogs |
-| `/maps/[id]` | Map detail — state timeline, players, resources, config, logs |
-| `/travel` | Travel — destination picker, resource checks, TravelStepper, block/queue/standby results |
-| `/resources` | Resources — host/fallback resource sample, per-process memory, governor policy |
-| `/config` | Config editor — safe form + raw editor, diff, validation, backup-before-save |
-| `/mods` | Mods — load order, downloads, enable/disable vs remove |
-| `/backups` | Backups — table, restore/delete confirms, policy |
-| `/logs` | Activity / Logs — filterable audit timeline |
-| `/discord` | Discord bot — commands, permission model, alerts |
-| `/settings` | Settings — cluster/Tailscale/policy/security, masked secrets |
+| `/` | Dashboard |
+| `/servers` | Server Manager |
+| `/mods` | Mods Manager |
+| `/config` | Config Editor |
+| `/backups` | Backups/Logs |
 
 ## Key domain concepts modeled in the UI
 - **Home protection** — Home preferred online, protected from travel rotation, may enter **Resource Standby** only when empty + under RAM pressure, auto-restarts on recovery.
 - **Resource governor** — never stops maps with players; explains each decision in plain language.
-- **Travel slots** — max 2; blocked/queued when both have players; can offer Home Standby to free RAM.
+- **On-demand slots** — limited by policy; active slots are treated conservatively until player counts are known.
 - **Safety** — confirmation dialogs (typed phrase for Home stop / mod delete / restore), disabled states with tooltips, restart-required + backup warnings, masked tokens, private-Tailscale-only warnings.
-
-## Mock data
-Single source: `src/lib/data/mock.ts` (maps, players, resources, governor, backups, mods, config, logs, Discord). Types in `src/lib/types.ts`. Tweak the scenario there — current state shows high RAM pressure with Home in Resource Standby and a blocked travel request.

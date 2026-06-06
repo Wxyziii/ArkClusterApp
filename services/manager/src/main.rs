@@ -1,8 +1,7 @@
-//! ARK Smart Cluster Manager — backend entrypoint (Phase 1).
+//! ARK Smart Cluster Manager backend entrypoint.
 //!
-//! Safe skeleton: config + API contract + auth + SQLite + mock data. It does
-//! NOT control ARK servers, RCON, systemd, Discord, or mods. All control-plane
-//! surfaces are inert models. See README for scope and limitations.
+//! Private manager API with guarded systemd, backup, config, mod, and runtime
+//! surfaces. Unknown live data is reported as unavailable.
 
 // Phase 1 is a skeleton: several models (systemd controller, RCON listener,
 // audit builders, extra config fields) are deliberate forward hooks that are
@@ -13,7 +12,8 @@ mod api;
 mod auth;
 mod config;
 mod db;
-mod mock;
+#[cfg(test)]
+mod test_data;
 mod models;
 mod state;
 

@@ -684,7 +684,7 @@ pub(crate) mod tests_support {
                 },
                 travel_a: Some(ServerSlot {
                     id: "travel-a".into(),
-                    label: "Travel A".into(),
+                    label: "On-demand slot 1".into(),
                     map_key: "rag".into(),
                     systemd_unit: "ark-server@travel-a.service".into(),
                     game_port: 7779,
@@ -700,7 +700,7 @@ pub(crate) mod tests_support {
                 }),
                 travel_b: Some(ServerSlot {
                     id: "travel-b".into(),
-                    label: "Travel B".into(),
+                    label: "On-demand slot 2".into(),
                     map_key: "ab".into(),
                     systemd_unit: "ark-server@travel-b.service".into(),
                     game_port: 7781,
@@ -721,11 +721,11 @@ pub(crate) mod tests_support {
                     role: "home".into(),
                 },
                 TravelSlot {
-                    name: "Travel A".into(),
+                    name: "On-demand slot 1".into(),
                     role: "travel".into(),
                 },
                 TravelSlot {
-                    name: "Travel B".into(),
+                    name: "On-demand slot 2".into(),
                     role: "travel".into(),
                 },
             ],
@@ -759,7 +759,7 @@ pub(crate) mod tests_support {
                     can_be_home: false,
                     can_auto_stop_when_empty: true,
                     can_enter_standby: false,
-                    assignment: "Travel A".into(),
+                    assignment: "On-demand".into(),
                     mods: vec![],
                 },
             ],

@@ -29,7 +29,7 @@ export { default as BackupTable } from './BackupTable.svelte';
 export { default as ModCard } from './ModCard.svelte';
 export { default as ModTable } from './ModTable.svelte';
 export { default as ConfigValueEditor } from './ConfigValueEditor.svelte';
-export { default as RawConfigEditorMock } from './RawConfigEditorMock.svelte';
+export { default as RawConfigEditor } from './RawConfigEditor.svelte';
 export { default as DiscordStatusCard } from './DiscordStatusCard.svelte';
 export { default as PageHeader } from './PageHeader.svelte';
 export { default as BackendStatusBanner } from './BackendStatusBanner.svelte';

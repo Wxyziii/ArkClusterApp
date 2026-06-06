@@ -1,7 +1,4 @@
-//! Mock data, mirroring `src/lib/data/mock.ts` so the API returns exactly the
-//! shapes the UI already renders. Phase 1 ONLY: this is static demo data, not
-//! real server state. The scenario matches the UI: high RAM pressure, Home in
-//! Resource Standby, a blocked travel request.
+//! Test/demo fixtures. This module is compiled only for tests.
 
 use serde_json::json;
 
@@ -9,7 +6,7 @@ use crate::models::domain::*;
 
 pub fn resources() -> ResourceSample {
     ResourceSample {
-        source: "mock".into(),
+        source: "demo".into(),
         ram_used_gb: 26.8,
         ram_total_gb: 32.0,
         ram_available_gb: 5.2,
@@ -107,7 +104,9 @@ pub fn maps() -> Vec<ArkMap> {
             assignment: "Home".into(),
             state: "Resource Standby".into(),
             players: 0,
-            max_players: 20,
+            player_count_source: "demo".into(),
+            max_players: 0,
+            max_players_source: "demo".into(),
             ram_mb: 0,
             ram_estimate_mb: 7200,
             uptime_mins: 0,
@@ -120,6 +119,9 @@ pub fn maps() -> Vec<ArkMap> {
             save_size_mb: 184,
             is_home: true,
             protected: true,
+            configured: true,
+            slot_id: Some("home".into()),
+            slot_role: "Home".into(),
             next_action: "Auto-restart when resources recover or Home requested".into(),
             config: cfg(
                 "ark-server@home-island.service",
@@ -146,10 +148,12 @@ pub fn maps() -> Vec<ArkMap> {
             name: "Ragnarok".into(),
             alias: "ragnarok".into(),
             role: "Travel-capable".into(),
-            assignment: "Travel A".into(),
+            assignment: "On-demand".into(),
             state: "Online".into(),
             players: 3,
-            max_players: 20,
+            player_count_source: "demo".into(),
+            max_players: 0,
+            max_players_source: "demo".into(),
             ram_mb: 8100,
             ram_estimate_mb: 8000,
             uptime_mins: 148,
@@ -162,6 +166,9 @@ pub fn maps() -> Vec<ArkMap> {
             save_size_mb: 221,
             is_home: false,
             protected: false,
+            configured: true,
+            slot_id: Some("travel_a".into()),
+            slot_role: "On-demand".into(),
             next_action: "Monitoring players — auto-shutdown only when empty".into(),
             config: cfg(
                 "ark-server@travel-a.service",
@@ -187,10 +194,12 @@ pub fn maps() -> Vec<ArkMap> {
             name: "Aberration".into(),
             alias: "aberration".into(),
             role: "Travel-capable".into(),
-            assignment: "Travel B".into(),
+            assignment: "On-demand".into(),
             state: "Online".into(),
             players: 2,
-            max_players: 20,
+            player_count_source: "demo".into(),
+            max_players: 0,
+            max_players_source: "demo".into(),
             ram_mb: 7600,
             ram_estimate_mb: 7800,
             uptime_mins: 64,
@@ -203,6 +212,9 @@ pub fn maps() -> Vec<ArkMap> {
             save_size_mb: 167,
             is_home: false,
             protected: false,
+            configured: true,
+            slot_id: Some("travel_b".into()),
+            slot_role: "On-demand".into(),
             next_action: "Restart required — GameUserSettings.ini changed".into(),
             config: cfg(
                 "ark-server@travel-b.service",
@@ -231,7 +243,9 @@ pub fn maps() -> Vec<ArkMap> {
             assignment: "Unassigned".into(),
             state: "Offline".into(),
             players: 0,
-            max_players: 20,
+            player_count_source: "demo".into(),
+            max_players: 0,
+            max_players_source: "demo".into(),
             ram_mb: 0,
             ram_estimate_mb: 8200,
             uptime_mins: 0,
@@ -244,6 +258,9 @@ pub fn maps() -> Vec<ArkMap> {
             save_size_mb: 203,
             is_home: false,
             protected: false,
+            configured: true,
+            slot_id: None,
+            slot_role: "Unassigned".into(),
             next_action: "Idle — start via !travel extinction".into(),
             config: cfg(
                 "ark-server@travel-c.service",
@@ -268,7 +285,9 @@ pub fn maps() -> Vec<ArkMap> {
             assignment: "Unassigned".into(),
             state: "Offline".into(),
             players: 0,
-            max_players: 20,
+            player_count_source: "demo".into(),
+            max_players: 0,
+            max_players_source: "demo".into(),
             ram_mb: 0,
             ram_estimate_mb: 6800,
             uptime_mins: 0,
@@ -281,6 +300,9 @@ pub fn maps() -> Vec<ArkMap> {
             save_size_mb: 142,
             is_home: false,
             protected: false,
+            configured: true,
+            slot_id: None,
+            slot_role: "Unassigned".into(),
             next_action: "Idle — start via !travel scorched".into(),
             config: cfg(
                 "ark-server@travel-d.service",
@@ -305,7 +327,9 @@ pub fn maps() -> Vec<ArkMap> {
             assignment: "Unassigned".into(),
             state: "Offline".into(),
             players: 0,
-            max_players: 20,
+            player_count_source: "demo".into(),
+            max_players: 0,
+            max_players_source: "demo".into(),
             ram_mb: 0,
             ram_estimate_mb: 8600,
             uptime_mins: 0,
@@ -318,6 +342,9 @@ pub fn maps() -> Vec<ArkMap> {
             save_size_mb: 256,
             is_home: false,
             protected: false,
+            configured: true,
+            slot_id: None,
+            slot_role: "Unassigned".into(),
             next_action: "Idle — Home-capable alternate".into(),
             config: cfg(
                 "ark-server@travel-e.service",
@@ -901,13 +928,13 @@ pub fn activity_log() -> Vec<LogEvent> {
         detail: detail.into(),
     };
     vec![
-        e("l1", "2026-06-03 20:48:11", "warn", "Travel", "Sable", "Extinction", "Travel request denied because both travel slots had active players", "Slots: Travel A=Ragnarok (3 players), Travel B=Aberration (2 players). Request queued."),
+        e("l1", "2026-06-03 20:48:11", "warn", "Travel", "Sable", "Extinction", "Travel request denied because all on-demand slots had active players", "On-demand slots were occupied. Request queued."),
         e("l2", "2026-06-03 20:48:03", "info", "RCON", "rust-manager", "Aberration", "Travel request received on Aberration RCON", "Chat line: Sable: !travel extinction"),
         e("l3", "2026-06-03 20:41:55", "warn", "Governor", "resource-governor", "The Island", "Home entered Resource Standby because it was empty and RAM pressure was high", "RAM 84% > pressure threshold 82%. Home players=0. Travel maps active."),
         e("l4", "2026-06-03 20:40:20", "success", "Backup", "rust-manager", "The Island", "Backup completed for Home before Resource Standby", "save backup 184 MB -> /srv/ark/backups/home-island/2026-06-03T2040.tar.zst"),
         e("l5", "2026-06-03 19:58:40", "warn", "Config", "Marcel", "Aberration", "GameUserSettings.ini changed; restart required", "OverrideOfficialDifficulty 4.0 -> 5.0. Pre-config backup taken."),
         e("l6", "2026-06-03 19:30:02", "warn", "Mod", "Marcel", "The Island", "Mod disabled; restart required", "Super Structures (1999447172) removed from active load order, files kept."),
-        e("l7", "2026-06-03 18:14:09", "success", "RCON", "rust-manager", "Travel B", "RCON reconnect succeeded for Travel B", "Reconnected after 2 retries (4.1s)."),
+        e("l7", "2026-06-03 18:14:09", "success", "RCON", "rust-manager", "On-demand", "RCON reconnect succeeded for an on-demand slot", "Reconnected after 2 retries (4.1s)."),
         e("l8", "2026-06-03 18:13:12", "info", "Discord", "discord-bot", "Ragnarok", "Discord user requested Extinction", "/travel extinction by Korin (queued earlier)."),
         e("l9", "2026-06-03 18:12:50", "success", "Map", "Voidwalker", "Ragnarok", "Ragnarok started by in-game command from Marcel", "systemd unit ark-server@travel-a.service started."),
         e("l10", "2026-06-03 18:12:48", "info", "Map", "systemd", "Ragnarok", "systemd unit ark-server@travel-a.service started", "Active: activating -> active (running) in 41s."),

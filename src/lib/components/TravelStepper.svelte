@@ -8,7 +8,7 @@
   const steps = [
     { t: 'Request received', d: 'From in-game chat, Discord, or Web UI' },
     { t: 'Resource check', d: 'RAM / CPU / disk pressure evaluated' },
-    { t: 'Slot selected', d: 'Travel A / Travel B chosen if free' },
+    { t: 'Slot selected', d: 'An on-demand slot is selected if free' },
     { t: 'Starting map (systemd)', d: 'ark-server@travel-x.service start' },
     { t: 'Waiting for RCON', d: 'Server boots, RCON becomes ready' },
     { t: 'Transfer available', d: 'Players may travel to the map' },

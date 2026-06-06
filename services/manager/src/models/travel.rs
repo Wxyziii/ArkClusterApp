@@ -86,6 +86,11 @@ pub async fn decide(
 ) -> Result<TravelDecision, sqlx::Error> {
     let id = format!("travel-{}", epoch_secs());
     let Some(map) = resolve_map(config, &req.map) else {
+        let reason = if known_official_map(&req.map) {
+            "official map is not configured in this cluster"
+        } else {
+            "unknown map"
+        };
         let decision = TravelDecision {
             id,
             accepted: false,
@@ -93,7 +98,7 @@ pub async fn decide(
             resolved_map: None,
             chosen_slot: None,
             status: "rejected".into(),
-            reason: "unknown map".into(),
+            reason: reason.into(),
         };
         insert_history(pool, &decision, &req, "").await?;
         return Ok(decision);
@@ -226,6 +231,55 @@ fn aliases_for(id: &str, alias: &str, ark: &str, name: &str) -> Vec<String> {
     out
 }
 
+fn known_official_map(raw: &str) -> bool {
+    let key = normalize(raw);
+    official_aliases().iter().any(|alias| normalize(alias) == key)
+}
+
+fn official_aliases() -> &'static [&'static str] {
+    &[
+        "the-island",
+        "The Island",
+        "TheIsland",
+        "island",
+        "scorched-earth",
+        "Scorched Earth",
+        "ScorchedEarth_P",
+        "scorched",
+        "aberration",
+        "Aberration_P",
+        "abb",
+        "extinction",
+        "genesis-1",
+        "Genesis: Part 1",
+        "Genesis",
+        "gen1",
+        "genesis-2",
+        "Genesis: Part 2",
+        "Gen2",
+        "gen2",
+        "the-center",
+        "The Center",
+        "TheCenter",
+        "center",
+        "ragnarok",
+        "rag",
+        "valguero",
+        "Valguero_P",
+        "val",
+        "crystal-isles",
+        "Crystal Isles",
+        "CrystalIsles",
+        "crystal",
+        "lost-island",
+        "Lost Island",
+        "LostIsland",
+        "lost",
+        "fjordur",
+        "fjord",
+    ]
+}
+
 fn normalize(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_ascii_alphanumeric())
@@ -248,5 +302,12 @@ mod tests {
     fn resolves_alias() {
         let cfg = crate::config::tests_support::base_config();
         assert_eq!(resolve_map(&cfg, "rag").unwrap().id, "rag");
+    }
+
+    #[test]
+    fn recognizes_unconfigured_official_alias() {
+        assert!(known_official_map("crystal"));
+        assert!(known_official_map("Genesis Part 2"));
+        assert!(!known_official_map("not-a-map"));
     }
 }

@@ -1,14 +1,13 @@
 //! Read-only host resource sampling.
 //!
 //! Linux hosts are sampled from `/proc` and `statvfs`. Unsupported platforms
-//! deliberately return mock/fallback data so Windows development stays usable.
+//! return an explicit unavailable sample rather than demo telemetry.
 
 use std::collections::HashMap;
 use std::time::Instant;
 #[cfg(target_os = "linux")]
 use std::{fs, path::Path, time::Duration};
 
-use crate::mock;
 use crate::models::domain::ResourceSample;
 
 const KB_PER_GB: f64 = 1024.0 * 1024.0;
@@ -35,8 +34,8 @@ pub async fn sample(cluster_dir: &str, started_at: Instant) -> ResourceSample {
         match linux_sample(cluster_dir, started_at).await {
             Ok(sample) => sample,
             Err(err) => {
-                tracing::warn!("host resource sampling failed, using fallback data: {err}");
-                fallback(started_at, "fallback")
+                tracing::warn!("host resource sampling failed: {err}");
+                unavailable(started_at)
             }
         }
     }
@@ -44,15 +43,29 @@ pub async fn sample(cluster_dir: &str, started_at: Instant) -> ResourceSample {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = cluster_dir;
-        fallback(started_at, "fallback")
+        unavailable(started_at)
     }
 }
 
-fn fallback(started_at: Instant, source: &str) -> ResourceSample {
-    let mut sample = mock::resources();
-    sample.source = source.to_string();
-    sample.manager_uptime_secs = started_at.elapsed().as_secs();
-    sample
+fn unavailable(started_at: Instant) -> ResourceSample {
+    ResourceSample {
+        source: "unavailable".into(),
+        ram_used_gb: 0.0,
+        ram_total_gb: 0.0,
+        ram_available_gb: 0.0,
+        cpu_pct: 0,
+        swap_used_gb: 0.0,
+        swap_total_gb: 0.0,
+        disk_used_gb: 0.0,
+        disk_total_gb: 0.0,
+        disk_free_gb: 0.0,
+        ark_proc_mem_gb: 0.0,
+        load1: 0.0,
+        load5: 0.0,
+        load15: 0.0,
+        manager_uptime_secs: started_at.elapsed().as_secs(),
+        system_uptime_secs: None,
+    }
 }
 
 #[cfg(target_os = "linux")]

@@ -1,4 +1,4 @@
-import type { MapState, RconStatus, SystemdStatus, Tone } from '$lib/types';
+import type { MapState, SystemdStatus, Tone } from '$lib/types';
 
 export const stateTone: Record<MapState, Tone> = {
   Offline: 'gray',
@@ -11,13 +11,16 @@ export const stateTone: Record<MapState, Tone> = {
   Stopping: 'amber',
   'Resource Standby': 'gray',
   Error: 'red',
-  Unknown: 'gray'
+  Unknown: 'gray',
+  Unavailable: 'gray'
 };
 
-export const rconTone: Record<RconStatus, Tone> = {
+export const rconTone: Record<string, Tone> = {
   Connected: 'cyan',
   Connecting: 'amber',
-  Disconnected: 'gray'
+  Disconnected: 'gray',
+  Disabled: 'gray',
+  Unavailable: 'gray'
 };
 
 export const systemdTone = (s: SystemdStatus): Tone =>

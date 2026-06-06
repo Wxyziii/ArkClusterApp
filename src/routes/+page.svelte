@@ -1,194 +1,154 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import {
-    PageHeader, Card, StatusBadge, ResourceCard, TravelSlotCard, HomeProtectionCard,
-    ResourceGovernorCard, ActivityLogItem, TravelStepper, Button, SafetyWarningPanel,
-    BackendStatusBanner
-  } from '$lib/components';
-  import * as mock from '$lib/data/mock';
-  import { thresholds } from '$lib/data/mock';
-  import { api, loadWithFallback, type Capabilities, type ClusterStatus } from '$lib/api';
-  import type { ArkMap, Backup, LogEvent, ResourceSample, TravelRequest, Tone } from '$lib/types';
+  import { api, type ClusterStatus, type ResourcesResponse } from '$lib/api';
+  import type { ArkMap, Backup, LogEvent } from '$lib/types';
 
-  // All state defaults to mock so the page renders instantly and survives a
-  // backend outage; onMount overrides with live data where available.
-  let maps = $state<ArkMap[]>(mock.maps);
-  let resources = $state<ResourceSample>(mock.resources);
-  let recentActivity = $state<LogEvent[]>(mock.recentActivity);
-  let backups = $state<Backup[]>(mock.backups);
-  let activeTravel = $state<TravelRequest>(mock.activeTravel);
   let status = $state<ClusterStatus | null>(null);
-  let capabilities = $state<Capabilities | null>(null);
-  let fromFallback = $state(false);
-  let loadError = $state<string | null>(null);
+  let maps = $state<ArkMap[]>([]);
+  let resources = $state<ResourcesResponse | null>(null);
+  let activity = $state<LogEvent[]>([]);
+  let backups = $state<Backup[]>([]);
+  let error = $state<string | null>(null);
+  let loading = $state(true);
 
-  onMount(async () => {
-    const [srv, rsrc, act, bk, st, caps] = await Promise.all([
-      loadWithFallback(() => api.servers(), mock.maps),
-      loadWithFallback(() => api.resources(), null),
-      loadWithFallback(() => api.activity(), null),
-      loadWithFallback(() => api.backups(), null),
-      loadWithFallback(() => api.status(), null),
-      loadWithFallback(() => api.capabilities(), null)
-    ]);
-    maps = srv.data;
-    if (rsrc.data) resources = rsrc.data.sample;
-    if (act.data) recentActivity = act.data.recent;
-    if (bk.data) backups = bk.data.backups;
-    if (st.data) status = st.data;
-    if (caps.data) capabilities = caps.data;
-    // Any failed call means we are (at least partly) on fallback data.
-    fromFallback = [srv, rsrc, act, bk, st, caps].some((r) => r.fromFallback);
-    loadError = srv.error ?? rsrc.error ?? st.error;
-  });
+  const configuredMaps = $derived(maps.filter((m) => m.configured));
+  const unavailableMaps = $derived(maps.filter((m) => !m.configured));
+  const onlineMaps = $derived(maps.filter((m) => ['Online', 'Ready', 'Starting'].includes(m.state)));
 
-  let homeMap = $derived(maps.find((m) => m.isHome) ?? mock.homeMap);
-  let travelA = $derived(maps.find((m) => m.assignment === 'Travel A') ?? null);
-  let travelB = $derived(maps.find((m) => m.assignment === 'Travel B') ?? null);
+  onMount(load);
 
-  let ramPct = $derived(Math.round((resources.ramUsedGb / resources.ramTotalGb) * 100));
-  let cpuPct = $derived(resources.cpuPct);
-  let swapPct = $derived(Math.round((resources.swapUsedGb / resources.swapTotalGb) * 100));
-  let diskPct = $derived(Math.round((resources.diskUsedGb / resources.diskTotalGb) * 100));
+  async function load() {
+    loading = true;
+    error = null;
+    try {
+      const [st, srv, res, act, bk] = await Promise.all([
+        api.status(),
+        api.servers(),
+        api.resources(),
+        api.activity(),
+        api.backups()
+      ]);
+      status = st;
+      maps = srv;
+      resources = res;
+      activity = act.recent;
+      backups = bk.backups;
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'API request failed';
+    } finally {
+      loading = false;
+    }
+  }
 
-  let pl = $derived.by((): { label: string; tone: Tone } => {
-    if (ramPct >= thresholds.ramEmergencyPct) return { label: 'Critical', tone: 'red' };
-    if (ramPct >= thresholds.ramPressurePct) return { label: 'Resource Pressure', tone: 'amber' };
-    if (ramPct >= thresholds.ramWarnPct) return { label: 'Warning', tone: 'amber' };
-    return { label: 'Healthy', tone: 'green' };
-  });
-
-  let totalPlayers = $derived(status?.players ?? maps.reduce((n, m) => n + m.players, 0));
-  let runningMaps = $derived(
-    status?.runningMaps ??
-      maps.filter((m) => m.state === 'Online' || m.state === 'Ready' || m.state === 'Starting').length
-  );
-
-  let runningBackup = $derived(backups.find((b) => b.status === 'running'));
-  let failedBackup = $derived(backups.find((b) => b.status === 'failed'));
-  let lastGood = $derived(backups.find((b) => b.status === 'success'));
-
-  let clusterStatus = $derived([
-    { label: 'Rust Manager', value: status?.manager.status ?? 'Online', tone: (status?.manager.tone ?? 'green') as Tone },
-    { label: 'systemd Read-only', value: status?.systemd.status ?? 'Available', tone: (status?.systemd.tone ?? 'green') as Tone },
-    { label: 'Tailscale', value: status?.tailscale.status ?? 'Connected', tone: (status?.tailscale.tone ?? 'cyan') as Tone },
-    { label: 'Discord Bot', value: status?.discord.status ?? 'Online', tone: (status?.discord.tone ?? 'green') as Tone }
-  ]);
-
-  let capabilityStatus = $derived([
-    { label: 'Systemd control', value: capabilities?.systemdControl.enabled ? 'Enabled' : 'Disabled', tone: (capabilities?.systemdControl.enabled ? 'amber' : 'gray') as Tone },
-    { label: 'Backups', value: capabilities?.backup.enabled ? 'Enabled' : 'Disabled', tone: (capabilities?.backup.enabled ? 'green' : 'gray') as Tone },
-    { label: 'RCON', value: capabilities?.rcon.enabled ? 'Enabled' : 'Disabled', tone: (capabilities?.rcon.enabled ? 'cyan' : 'gray') as Tone }
-  ]);
+  function cap(value: number | null) {
+    return value === null ? 'unknown' : String(value);
+  }
 </script>
 
-<PageHeader title="Dashboard" icon="🛰️" subtitle="At-a-glance health of the smart ARK cluster">
-  {#snippet actions()}
-    <Button variant="default" size="sm" href="/resources">Resources</Button>
-    <Button variant="primary" size="sm" href="/travel">Start Travel Map</Button>
-  {/snippet}
-</PageHeader>
-
-<BackendStatusBanner
-  error={loadError}
-  connected={!fromFallback && !!status}
-  dataSource={status?.resourcePressure.source ?? resources.source}
-  systemdStatus={status?.systemd.status ?? null}
-  capabilities={capabilities}
-/>
-
-<!-- compact status strip -->
-<div class="mb-5 card-elevated flex flex-wrap items-center gap-x-6 gap-y-3 p-4">
-  <div class="mr-auto">
-    <p class="text-xs text-[#8c8c8c]">Cluster state</p>
-    <p class="mt-1 text-lg font-bold"
-      class:text-[#7c9a82]={pl.tone === 'green'} class:text-[#bfa15e]={pl.tone === 'amber'} class:text-[#b5544f]={pl.tone === 'red'}>
-      {pl.label}
-    </p>
-    <p class="mt-0.5 text-[11px] text-[#8c8c8c]">{totalPlayers} players · {runningMaps} maps · src {status?.resourcePressure.source ?? resources.source}</p>
-  </div>
-  <div class="flex flex-wrap items-center gap-2">
-    {#each clusterStatus as s (s.label)}<StatusBadge label="{s.label}: {s.value}" tone={s.tone} dot size="sm" />{/each}
-    {#each capabilityStatus as c (c.label)}<StatusBadge label="{c.label}: {c.value}" tone={c.tone} size="sm" />{/each}
-  </div>
-</div>
-
-<!-- system health -->
-<Card title="System Health" icon="📊">
-  {#snippet actions()}<StatusBadge label={pl.label} tone={pl.tone} dot />{/snippet}
-  <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-    <ResourceCard label="RAM" icon="🧠" pct={ramPct} detail="{resources.ramUsedGb} / {resources.ramTotalGb} GB" warn={70} danger={88} />
-    <ResourceCard label="CPU" icon="⚡" pct={cpuPct} detail="8 cores · load high" warn={75} danger={90} />
-    <ResourceCard label="Swap" icon="🔁" pct={swapPct} detail="{resources.swapUsedGb} / {resources.swapTotalGb} GB" warn={30} danger={60} />
-    <ResourceCard label="Disk" icon="🗄️" pct={diskPct} detail="{resources.diskUsedGb} / {resources.diskTotalGb} GB" warn={80} danger={92} />
-  </div>
-  <p class="mt-3 text-xs text-[#8c8c8c]">
-    ARK process memory total: <span class="font-bold text-[#ededed]">{resources.arkProcMemGb} GB</span>
-    across running maps. Load: {resources.load1} / {resources.load5} / {resources.load15}.
-  </p>
-</Card>
-
-<!-- running maps -->
-<div class="mt-5">
-  <h2 class="mb-3 flex items-center gap-2 text-sm font-semibold text-[#8c8c8c]">🗺️ Running Maps & Slots</h2>
-  <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
-    <TravelSlotCard slot="Home" map={homeMap} />
-    <TravelSlotCard slot="Travel A" map={travelA} />
-    <TravelSlotCard slot="Travel B" map={travelB} />
-  </div>
-</div>
-
-<!-- two-col: home protection + governor -->
-<div class="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-2">
-  <HomeProtectionCard home={homeMap} />
-  <ResourceGovernorCard />
-</div>
-
-<!-- active travel + backup status -->
-<div class="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-2">
-  <Card title="Active Travel" icon="🧭">
-    {#snippet actions()}<StatusBadge label={activeTravel.result} tone={activeTravel.result === 'Blocked' ? 'red' : 'amber'} dot />{/snippet}
-    <div class="mb-3 grid grid-cols-2 gap-2 text-xs">
-      <div><p class="text-[#8c8c8c]">Requested map</p><p class="font-medium text-[#ededed]">{activeTravel.map}</p></div>
-      <div><p class="text-[#8c8c8c]">Requested by</p><p class="font-medium text-[#ededed]">{activeTravel.requestedBy}</p></div>
-      <div><p class="text-[#8c8c8c]">Source</p><p class="font-mono text-[#8aa1ae]">{activeTravel.sourceRaw}</p></div>
-      <div><p class="text-[#8c8c8c]">From map</p><p class="font-medium text-[#ededed]">{activeTravel.sourceMap}</p></div>
+<section class="page">
+  <div class="page-head">
+    <div>
+      <h1>Dashboard</h1>
+      <p>Live manager, host, map, backup, and activity state.</p>
     </div>
-    <SafetyWarningPanel tone="danger" title="Request blocked">{activeTravel.reason}</SafetyWarningPanel>
-    <div class="mt-3"><TravelStepper current={activeTravel.step} blocked={true} blockedAt={2} /></div>
-  </Card>
+    <div class="toolbar">
+      <button class="button" onclick={load} disabled={loading}>{loading ? 'Refreshing' : 'Refresh'}</button>
+      <a class="button primary" href="/servers">Server Manager</a>
+    </div>
+  </div>
 
-  <Card title="Backup Status" icon="💾">
-    {#snippet actions()}<Button size="sm" variant="ghost" href="/backups">All backups</Button>{/snippet}
-    <div class="space-y-3">
-      <div class="rounded-lg border border-[#7c9a82]/30 bg-[#7c9a82]/5 p-3">
-        <p class="text-[11px] uppercase text-[#8c8c8c]">Last successful</p>
-        <p class="mt-0.5 text-sm font-medium">{lastGood?.map} · {lastGood?.created}</p>
-        <p class="text-[11px] text-[#8c8c8c]">reason: {lastGood?.reason}</p>
+  {#if error}
+    <div class="notice error">{error}</div>
+  {/if}
+
+  <div class="grid cols-4">
+    <div class="panel"><div class="panel-body metric"><span>Manager</span><strong>{status?.manager.status ?? 'Unavailable'}</strong><span>{status?.dataMode ?? 'live'} mode</span></div></div>
+    <div class="panel"><div class="panel-body metric"><span>Online maps</span><strong>{onlineMaps.length}</strong><span>{configuredMaps.length} configured</span></div></div>
+    <div class="panel"><div class="panel-body metric"><span>Players</span><strong>{status?.players ?? 'Unknown'}</strong><span>{status?.playerCountSource ?? 'unavailable'}</span></div></div>
+    <div class="panel"><div class="panel-body metric"><span>RAM pressure</span><strong>{status?.resourcePressure.ramPct ?? resources?.derived.ramPct ?? 0}%</strong><span>{status?.resourcePressure.source ?? resources?.source ?? 'unavailable'}</span></div></div>
+  </div>
+
+  <div class="grid cols-2">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Cluster Status</h2>
+        <span class="chip {status?.tailscale.bindPrivate ? 'green' : 'red'}">{status?.tailscale.status ?? 'unknown'}</span>
       </div>
-      {#if runningBackup}
-        <div class="rounded-lg border border-[#bfa15e]/30 bg-[#bfa15e]/5 p-3">
-          <p class="flex items-center gap-2 text-sm font-medium text-[#bfa15e]"><span class="h-2 w-2 rounded-full bg-[#bfa15e] live-dot"></span>Backup running</p>
-          <p class="text-[11px] text-[#8c8c8c]">{runningBackup.map} · {runningBackup.progress}% · {runningBackup.reason}</p>
+      <div class="panel-body grid">
+        <div class="grid cols-3">
+          <div class="metric"><span>Systemd</span><strong>{status?.systemd.status ?? 'Unknown'}</strong><span>{status?.systemd.source ?? 'systemd'}</span></div>
+          <div class="metric"><span>Discord</span><strong>{status?.discord.status ?? 'Unknown'}</strong><span>{status?.discord.source ?? 'manager'}</span></div>
+          <div class="metric"><span>Backups</span><strong>{backups.length}</strong><span>sqlite records</span></div>
         </div>
-      {/if}
-      {#if failedBackup}
-        <div class="rounded-lg border border-[#b5544f]/30 bg-[#b5544f]/5 p-3">
-          <p class="flex items-center gap-2 text-sm font-medium text-[#b5544f]">⛔ Failed backup</p>
-          <p class="mt-0.5 text-[11px] text-[#8c8c8c]">{failedBackup.map} · {failedBackup.created}</p>
-          <p class="mt-1 font-mono text-[10px] text-[#b5544f]">{failedBackup.error}</p>
-        </div>
-      {/if}
+        <div class="notice">Private bind: {status?.tailscale.bindAddress ?? 'unavailable'}. Tailscale connection is not asserted unless a runtime source reports it.</div>
+      </div>
     </div>
-  </Card>
-</div>
 
-<!-- recent activity -->
-<div class="mt-5">
-  <Card title="Recent Activity" icon="📜">
-    {#snippet actions()}<Button size="sm" variant="ghost" href="/logs">View all logs</Button>{/snippet}
-    <div class="divide-y divide-[#2a2a2a]/40">
-      {#each recentActivity as e (e.id)}<ActivityLogItem event={e} />{/each}
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Resource Governor</h2>
+        <span class="chip cyan">{resources?.governor.decision ?? 'unknown'}</span>
+      </div>
+      <div class="panel-body">
+        <p class="muted">{resources?.governor.why ?? 'Resource policy unavailable until API responds.'}</p>
+        <div class="grid cols-3" style="margin-top:12px">
+          <div class="metric"><span>CPU</span><strong>{resources?.derived.cpuPct ?? 0}%</strong><span>host sample</span></div>
+          <div class="metric"><span>Disk</span><strong>{resources?.derived.diskPct ?? 0}%</strong><span>{resources?.sample.diskFreeGb ?? 0} GB free</span></div>
+          <div class="metric"><span>Load</span><strong>{resources?.loadAverage.one ?? 0}</strong><span>1 minute</span></div>
+        </div>
+      </div>
     </div>
-  </Card>
-</div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h2>Servers</h2>
+      <span class="chip">{unavailableMaps.length} official maps not configured</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Map</th><th>State</th><th>Slot</th><th>Players</th><th>Max players</th><th>Systemd</th></tr>
+        </thead>
+        <tbody>
+          {#each maps.slice(0, 12) as map (map.id)}
+            <tr>
+              <td><strong>{map.name}</strong><div class="muted mono">{map.config.arkMapName}</div></td>
+              <td><span class="chip {map.state === 'Online' ? 'green' : map.state === 'Unavailable' ? 'red' : 'amber'}">{map.state}</span></td>
+              <td>{map.slotRole}</td>
+              <td>{map.playerCountSource === 'rcon' ? map.players : 'unknown'}</td>
+              <td>{cap(map.maxPlayers)}</td>
+              <td class="mono">{map.systemd}</td>
+            </tr>
+          {:else}
+            <tr><td colspan="6">No server data returned.</td></tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="grid cols-2">
+    <div class="panel">
+      <div class="panel-head"><h2>Recent Activity</h2><span class="chip">sqlite</span></div>
+      <div class="panel-body grid">
+        {#each activity as item (item.id)}
+          <div class="notice"><strong>{item.message}</strong><div class="muted">{item.ts} · {item.source} · {item.detail}</div></div>
+        {:else}
+          <p class="muted">No activity rows are present.</p>
+        {/each}
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Recent Backups</h2><a class="button" href="/backups">Open</a></div>
+      <div class="panel-body grid">
+        {#each backups.slice(0, 5) as backup (backup.id)}
+          <div class="notice"><strong>{backup.map}</strong><div class="muted">{backup.createdAt ?? backup.created} · {backup.status} · {backup.sizeMb} MB</div></div>
+        {:else}
+          <p class="muted">No backup rows are present.</p>
+        {/each}
+      </div>
+    </div>
+  </div>
+</section>

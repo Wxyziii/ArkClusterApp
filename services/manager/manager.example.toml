@@ -66,7 +66,8 @@ retention = "Keep 14 daily + 6 weekly, prune older than 60 days"
 directory = "/srv/ark/backups"
 
 [discord]
-# Placeholder only — no bot is started in this phase.
+# Discord bot service/config surface. Runtime command/event status is reported
+# only when it can be queried.
 enabled = false
 guild = "Apex Survivors"
 status_channel = "#ark-status"
@@ -84,11 +85,11 @@ name = "Home"
 role = "home"
 
 [[travel_slots]]
-name = "Travel A"
+name = "On-demand slot 1"
 role = "travel"
 
 [[travel_slots]]
-name = "Travel B"
+name = "On-demand slot 2"
 role = "travel"
 
 # Read-only server slots. These are the real systemd-backed server positions
@@ -119,7 +120,7 @@ password_env = "ARK_HOME_RCON_PASSWORD"
 
 [slots.travel_a]
 id = "travel-a"
-label = "Travel A"
+label = "On-demand slot 1"
 map_key = "ragnarok"
 systemd_unit = "ark-server@travel-a.service"
 game_port = 7781
@@ -140,7 +141,7 @@ password_env = "ARK_TRAVEL_A_RCON_PASSWORD"
 
 [slots.travel_b]
 id = "travel-b"
-label = "Travel B"
+label = "On-demand slot 2"
 map_key = "aberration"
 systemd_unit = "ark-server@travel-b.service"
 game_port = 7785
@@ -223,7 +224,7 @@ slot_priority = 1
 can_be_home = false
 can_auto_stop_when_empty = true
 can_enter_standby = false
-assignment = "Travel A"
+assignment = "On-demand"
 mods = ["Structures Plus (S+)", "Awesome SpyGlass!", "Dino Storage v2"]
 
 [[maps]]
@@ -239,7 +240,7 @@ slot_priority = 2
 can_be_home = false
 can_auto_stop_when_empty = true
 can_enter_standby = false
-assignment = "Travel B"
+assignment = "On-demand"
 mods = ["Awesome SpyGlass!", "Dino Storage v2", "Aberration Ascended Loot"]
 
 [[maps]]

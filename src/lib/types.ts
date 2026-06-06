@@ -1,5 +1,3 @@
-// ARK Smart Cluster Manager — shared domain types (mock prototype)
-
 export type Tone = 'green' | 'amber' | 'red' | 'gray' | 'cyan' | 'accent';
 
 export type MapState =
@@ -13,18 +11,21 @@ export type MapState =
   | 'Stopping'
   | 'Resource Standby'
   | 'Error'
-  | 'Unknown';
+  | 'Unknown'
+  | 'Unavailable';
 
-export type RoleCapability = 'Home-capable' | 'Travel-capable' | 'Disabled';
-export type SlotAssignment = 'Home' | 'Travel A' | 'Travel B' | 'Unassigned';
-export type RconStatus = 'Connected' | 'Connecting' | 'Disconnected';
+export type RoleCapability = 'Home-capable' | 'Travel-capable' | 'Disabled' | 'Not configured';
+export type SlotAssignment = 'Home' | 'On-demand' | 'Unassigned' | 'Not configured' | string;
+export type RconStatus = 'Connected' | 'Connecting' | 'Disconnected' | 'Disabled' | 'Unavailable' | string;
 export type SystemdStatus =
   | 'active (running)'
   | 'activating'
   | 'inactive (dead)'
   | 'failed'
   | 'unknown'
-  | 'systemd unavailable';
+  | 'systemd unavailable'
+  | 'not configured'
+  | string;
 
 export interface SystemdDetail {
   unit: string;
@@ -73,7 +74,9 @@ export interface ArkMap {
   assignment: SlotAssignment;
   state: MapState;
   players: number;
-  maxPlayers: number;
+  playerCountSource: string;
+  maxPlayers: number | null;
+  maxPlayersSource: string;
   ramMb: number;
   ramEstimateMb: number;
   uptimeMins: number;
@@ -86,26 +89,16 @@ export interface ArkMap {
   saveSizeMb: number;
   isHome: boolean;
   protected: boolean;
+  configured: boolean;
+  slotId?: string;
+  slotRole: string;
   nextAction: string;
   config: MapConfigSummary;
   systemdDetail?: SystemdDetail;
 }
 
-export interface TravelRequest {
-  id: string;
-  map: string;
-  requestedBy: string;
-  source: 'In-game chat' | 'Discord command' | 'Web UI';
-  sourceRaw: string;
-  sourceMap: string;
-  step: number;
-  result: 'Ready' | 'Starting' | 'Blocked' | 'Queued' | 'Failed' | 'Already online';
-  reason: string;
-  at: string;
-}
-
 export interface ResourceSample {
-  source: 'host' | 'mock' | 'fallback' | string;
+  source: 'host' | 'unavailable' | string;
   ramUsedGb: number;
   ramTotalGb: number;
   ramAvailableGb: number;
@@ -126,8 +119,8 @@ export interface ResourceSample {
 export interface LogEvent {
   id: string;
   ts: string;
-  severity: 'info' | 'warn' | 'error' | 'success';
-  source: 'Map' | 'Travel' | 'Governor' | 'RCON' | 'Discord' | 'Config' | 'Mod' | 'Backup' | 'User';
+  severity: 'info' | 'warn' | 'error' | 'success' | string;
+  source: string;
   actor: string;
   targetMap: string;
   message: string;
@@ -137,14 +130,14 @@ export interface LogEvent {
 export interface Backup {
   id: string;
   map: string;
-  type: 'save' | 'config' | 'mod' | 'cluster data' | 'combined';
+  type: string;
   sizeMb: number;
   sizeBytes?: number;
   created: string;
   createdAt?: string;
   completedAt?: string | null;
-  reason: 'manual' | 'manual_admin_action' | 'auto-shutdown' | 'resource standby' | 'scheduled' | 'pre-update' | 'pre-config-change' | 'pre-mod-change';
-  status: 'success' | 'running' | 'failed' | 'verifying';
+  reason: string;
+  status: string;
   path?: string;
   source?: string;
   progress?: number;
@@ -169,7 +162,7 @@ export interface ConfigField {
   key: string;
   label: string;
   value: number | boolean | string;
-  type: 'number' | 'bool' | 'enum';
+  type: 'number' | 'bool' | 'enum' | 'string';
   group: string;
   min?: number;
   max?: number;
@@ -177,17 +170,4 @@ export interface ConfigField {
   options?: string[];
   hint: string;
   restartRequired: boolean;
-}
-
-export interface DiscordEvent {
-  id: string;
-  ts: string;
-  kind: string;
-  text: string;
-}
-
-export interface AlertSetting {
-  key: string;
-  label: string;
-  enabled: boolean;
 }

@@ -95,7 +95,7 @@ pub fn evaluate(
         decision,
         why,
         examples: vec![
-            "Travel A and Travel B have players. New travel requests are blocked.".into(),
+            "All on-demand slots have active players. New travel requests are blocked.".into(),
             "Home has 0 players and RAM pressure is high. Home is eligible for Resource Standby."
                 .into(),
             format!(
