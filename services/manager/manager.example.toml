@@ -21,6 +21,9 @@ manager_version = "rust-manager v0.1.0"
 # or "0.0.0.0" ONLY if the host is already firewalled to the tailnet.
 bind_address = "127.0.0.1"
 port = 8787
+# Player-facing host used in Discord/Web/in-game connection info.
+# For Tailscale set this to the same tailnet IP players use, e.g. 100.x.x.x.
+player_connect_host = "127.0.0.1"
 # Bearer token required for all /api/* routes. /health needs no token.
 # Leave empty here and set ARK_MANAGER_API_TOKEN in the environment instead.
 api_token = "change-me-dev-token"

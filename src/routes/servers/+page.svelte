@@ -78,8 +78,13 @@
 
   function players(map: ArkMap) {
     if (map.playerCountSource === 'rcon') return String(map.players);
-    if (map.launchReady && ['Not running', 'Offline'].includes(map.state)) return '0';
+    if (['not_running', 'stopped'].includes(map.playerCountSource)) return '0';
     return 'unknown';
+  }
+
+  function connectionLine(map: ArkMap) {
+    if (map.connectionAvailable) return `${map.connectionAddress} · query ${map.queryAddress}`;
+    return map.connectionUnavailableReason || 'connection unavailable';
   }
 
   function canRunDirectAction(map: ArkMap) {
@@ -143,6 +148,8 @@
             <div class="metric"><span>Systemd</span><strong>{selected.systemd}</strong><span>{selected.config.systemdUnit || 'not configured'}</span></div>
             <div class="metric"><span>Players</span><strong>{players(selected)}</strong><span>{selected.playerCountSource}</span></div>
             <div class="metric"><span>Max players</span><strong>{selected.maxPlayers ?? 'Unknown'}</strong><span>{selected.maxPlayersSource}</span></div>
+            <div class="metric"><span>Game connect</span><strong>{selected.connectionAvailable ? selected.connectionAddress : 'Unavailable'}</strong><span>{connectionLine(selected)}</span></div>
+            <div class="metric"><span>Steam query</span><strong>{selected.connectionAvailable ? selected.queryAddress : 'Unavailable'}</strong><span>{selected.connectionSource}</span></div>
           </div>
           <label class="muted" for="reason">Action reason</label>
           <input id="reason" class="field" bind:value={actionReason} />

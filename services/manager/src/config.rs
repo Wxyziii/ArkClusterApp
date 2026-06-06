@@ -54,6 +54,8 @@ pub struct ServerConfig {
     pub port: u16,
     #[serde(default)]
     pub api_token: String,
+    #[serde(default)]
+    pub player_connect_host: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -356,6 +358,16 @@ impl Config {
                 self.server.bind_address
             )));
         }
+        if self
+            .server
+            .player_connect_host
+            .chars()
+            .any(char::is_whitespace)
+        {
+            return Err(inv(
+                "server.player_connect_host must not contain whitespace".into(),
+            ));
+        }
 
         // --- thresholds sane and ordered ---
         let p = &self.resource_policy;
@@ -613,6 +625,15 @@ impl Config {
         std::net::SocketAddr::new(ip, self.server.port)
     }
 
+    pub fn player_connect_host(&self) -> String {
+        let configured = self.server.player_connect_host.trim();
+        if configured.is_empty() {
+            self.server.bind_address.clone()
+        } else {
+            configured.into()
+        }
+    }
+
     /// True when the bind address is a private/loopback address — i.e. safe for
     /// the intended Tailscale/LAN-only deployment.
     pub fn bind_is_private(&self) -> bool {
@@ -703,6 +724,7 @@ pub(crate) mod tests_support {
                 bind_address: "127.0.0.1".into(),
                 port: 8787,
                 api_token: "tok".into(),
+                player_connect_host: "100.68.7.42".into(),
             },
             operations: OperationsConfig::default(),
             paths: PathsConfig {

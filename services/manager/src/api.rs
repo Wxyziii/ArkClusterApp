@@ -321,11 +321,33 @@ async fn travel(State(s): State<AppState>) -> impl IntoResponse {
         .iter()
         .map(|snapshot| {
             let current_map_id = travel_model::effective_slot_map_id(&s.config, &snapshot.slot);
-            let current_map = maps.iter().find(|m| m.id == current_map_id).cloned();
-            let player_count_source = current_map
-                .as_ref()
-                .map(|m| m.player_count_source.as_str())
-                .unwrap_or("unavailable");
+            let current_map =
+                maps.iter()
+                    .find(|m| m.id == current_map_id)
+                    .cloned()
+                    .map(|mut map| {
+                        if !snapshot.status.active {
+                            map.state = "Offline".into();
+                            map.players = 0;
+                            map.player_count_source = "stopped".into();
+                            map.rcon = "Disconnected".into();
+                            map.systemd = snapshot.status.state.clone();
+                            map.connection_available = false;
+                            map.connection_address.clear();
+                            map.query_address.clear();
+                            map.connection_source = "systemd".into();
+                            map.connection_unavailable_reason = "map not running".into();
+                        }
+                        map
+                    });
+            let player_count_source = if snapshot.status.active {
+                current_map
+                    .as_ref()
+                    .map(|m| m.player_count_source.as_str())
+                    .unwrap_or("unavailable")
+            } else {
+                "stopped"
+            };
             json!({
                 "slotId": snapshot.slot.id,
                 "role": slot_role_label(snapshot.key),
@@ -1450,6 +1472,9 @@ async fn enrich_map_runtime(map: &mut ArkMap, s: &AppState) {
     } else {
         map.systemd_detail = None;
     }
+    if let Some((slot, _)) = active_slot {
+        apply_connection_to_map(map, &s.config, slot);
+    }
 }
 
 fn map_from_config(cfg: &MapConfig, max_players: u32, max_players_source: &str) -> ArkMap {
@@ -1490,6 +1515,14 @@ fn map_from_config(cfg: &MapConfig, max_players: u32, max_players_source: &str) 
             "On-demand".into()
         },
         next_action: "Read-only status; control disabled in this phase".into(),
+        connect_host: String::new(),
+        game_port: 0,
+        query_port: 0,
+        connection_address: String::new(),
+        query_address: String::new(),
+        connection_source: "unavailable".into(),
+        connection_available: false,
+        connection_unavailable_reason: "map not running".into(),
         config: MapConfigSummary {
             systemd_unit: cfg.systemd_unit.clone(),
             ark_map_name: cfg.ark_map_name.clone(),
@@ -1545,6 +1578,14 @@ fn map_from_official(
         slot_id: None,
         slot_role: "On-demand pool".into(),
         next_action: "Launch-ready on-demand destination".into(),
+        connect_host: String::new(),
+        game_port: 0,
+        query_port: 0,
+        connection_address: String::new(),
+        query_address: String::new(),
+        connection_source: "unavailable".into(),
+        connection_available: false,
+        connection_unavailable_reason: "map not running".into(),
         config: MapConfigSummary {
             systemd_unit: "".into(),
             ark_map_name: official.ark_map_name.into(),
@@ -1697,6 +1738,42 @@ fn apply_slot_to_map(map: &mut ArkMap, slot: &ServerSlot, slot_key: &str) {
         map.state = "Offline".into();
         map.next_action = "Slot disabled in config".into();
     }
+}
+
+fn apply_connection_to_map(map: &mut ArkMap, config: &crate::config::Config, slot: &ServerSlot) {
+    map.connect_host = config.player_connect_host();
+    map.game_port = slot.game_port;
+    map.query_port = slot.query_port;
+    let running = matches!(map.state.as_str(), "Online" | "Ready" | "Starting");
+    if !running {
+        map.connection_available = false;
+        map.connection_source = "systemd".into();
+        map.connection_address.clear();
+        map.query_address.clear();
+        map.connection_unavailable_reason = "map not running".into();
+        return;
+    }
+    if map.connect_host.trim().is_empty() {
+        map.connection_available = false;
+        map.connection_source = "manager_config".into();
+        map.connection_address.clear();
+        map.query_address.clear();
+        map.connection_unavailable_reason = "player connect host is not configured".into();
+        return;
+    }
+    if slot.game_port == 0 || slot.query_port == 0 {
+        map.connection_available = false;
+        map.connection_source = "slot_config".into();
+        map.connection_address.clear();
+        map.query_address.clear();
+        map.connection_unavailable_reason = "slot game/query port is not configured".into();
+        return;
+    }
+    map.connection_available = true;
+    map.connection_source = "slot_config".into();
+    map.connection_address = format!("{}:{}", map.connect_host, slot.game_port);
+    map.query_address = format!("{}:{}", map.connect_host, slot.query_port);
+    map.connection_unavailable_reason.clear();
 }
 
 fn map_state_from_systemd(map: &ArkMap, status: &UnitStatus) -> String {

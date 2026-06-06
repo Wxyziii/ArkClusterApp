@@ -823,10 +823,14 @@ async fn poll_once(state: &AppState) {
                         )
                         .await
                         {
-                            if !log.trim().is_empty() {
+                            let lines = log
+                                .lines()
+                                .filter(|line| !is_ignorable_game_log_line(line))
+                                .collect::<Vec<_>>();
+                            if !lines.is_empty() {
                                 chat_source = "rcon_gamelog".into();
                                 let mut runtime = state.rcon_runtime.write().await;
-                                for line in log.lines() {
+                                for line in lines {
                                     if let Some(message) =
                                         runtime.push_chat_line(&slot.id, "rcon_gamelog", line)
                                     {
@@ -925,12 +929,33 @@ fn log_candidates(config: &Config) -> Vec<PathBuf> {
     } else {
         &config.paths.ark_root
     };
-    vec![Path::new(ark_root)
+    let log_dir = Path::new(ark_root)
         .join("server")
         .join("ShooterGame")
         .join("Saved")
-        .join("Logs")
-        .join("ShooterGame.log")]
+        .join("Logs");
+    let mut out = vec![log_dir.join("ShooterGame.log")];
+    if let Ok(entries) = std::fs::read_dir(&log_dir) {
+        let mut discovered = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name == "ShooterGame.log"
+                            || (name.starts_with("ShooterGame_") && name.ends_with(".log"))
+                    })
+            })
+            .collect::<Vec<_>>();
+        discovered.sort();
+        for path in discovered {
+            if !out.iter().any(|existing| existing == &path) {
+                out.push(path);
+            }
+        }
+    }
+    out
 }
 
 fn default_chat_slot_id(config: &Config, runtime: &RconRuntimeState) -> String {
@@ -1008,6 +1033,20 @@ async fn process_detected_command(state: &AppState, message: ChatMessage) {
                     )),
             )
             .await;
+            let detail =
+                feedback_history_detail(&received_feedback_result, &decision_feedback_result);
+            if let Err(err) =
+                travel::append_history_detail(&state.pool, &decision.id, &detail).await
+            {
+                audit::record(
+                    &state.pool,
+                    &AuditEvent::new(Severity::Warn, "Travel", "feedback history update failed")
+                        .actor(&message.player)
+                        .target(decision.resolved_map.as_deref().unwrap_or(""))
+                        .detail(sanitize_error(&err.to_string())),
+                )
+                .await;
+            }
         }
         Err(err) => {
             audit::record(
@@ -1070,6 +1109,34 @@ fn feedback_result_label(result: &Result<(), String>) -> String {
     }
 }
 
+fn feedback_history_detail(received: &Result<(), String>, decision: &Result<(), String>) -> String {
+    let sent = received.is_ok() && decision.is_ok();
+    let error = received
+        .as_ref()
+        .err()
+        .or_else(|| decision.as_ref().err())
+        .map(|err| token_value(err))
+        .unwrap_or_else(|| "none".into());
+    format!(
+        "feedbackAttempted=true feedbackSent={} feedbackResult={} feedbackError={}",
+        sent,
+        if sent { "sent" } else { "failed" },
+        error
+    )
+}
+
+fn token_value(value: &str) -> String {
+    let token = sanitize_error(value)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("_");
+    if token.trim().is_empty() {
+        "unknown".into()
+    } else {
+        token.chars().take(160).collect()
+    }
+}
+
 fn ark_feedback_for_decision(decision: &travel::TravelDecision) -> String {
     let message =
         if decision.status == "blocked" && decision.reason.contains("travel scheduler disabled") {
@@ -1078,6 +1145,13 @@ fn ark_feedback_for_decision(decision: &travel::TravelDecision) -> String {
             decision.user_message.clone()
         };
     format!("[ARK Cluster] {message}")
+}
+
+fn is_ignorable_game_log_line(line: &str) -> bool {
+    let normalized = line.trim();
+    normalized.is_empty()
+        || normalized.eq_ignore_ascii_case("Server received, But no response!!")
+        || normalized.eq_ignore_ascii_case("Server received, but no response!!")
 }
 
 fn sanitize_chat_message(message: &str) -> String {
@@ -1388,6 +1462,18 @@ mod tests {
         let parsed = parse_chat_line("TribeName(Tribe): !travel genesis 2");
         assert_eq!(parsed.player, "TribeName(Tribe)");
         assert_eq!(parsed.detected_command.unwrap().argument, "genesis 2");
+
+        let parsed = parse_chat_line("Człowiek: !travel gen1");
+        assert_eq!(parsed.player, "Człowiek");
+        assert_eq!(parsed.detected_command.unwrap().argument, "gen1");
+
+        let parsed = parse_chat_line("Człowiek(PLEMIE):  !travel   gen1");
+        assert_eq!(parsed.player, "Człowiek(PLEMIE)");
+        assert_eq!(parsed.detected_command.unwrap().argument, "gen1");
+
+        let parsed = parse_chat_line("[Lokalny] Człowiek(PLEMIE):  !TrAvEl   fjord");
+        assert_eq!(parsed.player, "Człowiek(PLEMIE)");
+        assert_eq!(parsed.detected_command.unwrap().argument, "fjord");
     }
 
     #[test]
@@ -1454,11 +1540,19 @@ mod tests {
             chosen_slot: Some("travel-a".into()),
             status: "starting".into(),
             reason: "starting Genesis: Part 1".into(),
-            user_message: "Starting Genesis: Part 1. This may take a few minutes.".into(),
+            user_message: "Starting Genesis: Part 1. This may take a few minutes. Connect: 100.68.7.42:7781. Query/Favorites: 100.68.7.42:27016.".into(),
+            connect_host: Some("100.68.7.42".into()),
+            game_port: Some(7781),
+            query_port: Some(27016),
+            connection_address: Some("100.68.7.42:7781".into()),
+            query_address: Some("100.68.7.42:27016".into()),
+            connection_source: Some("slot_config".into()),
+            connection_available: true,
+            connection_unavailable_reason: None,
         };
         assert_eq!(
             ark_feedback_for_decision(&decision),
-            "[ARK Cluster] Starting Genesis: Part 1. This may take a few minutes."
+            "[ARK Cluster] Starting Genesis: Part 1. This may take a few minutes. Connect: 100.68.7.42:7781. Query/Favorites: 100.68.7.42:27016."
         );
         assert_eq!(sanitize_chat_message("a\n b\r c"), "a b c");
     }

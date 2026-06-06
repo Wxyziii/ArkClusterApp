@@ -234,6 +234,14 @@ export interface TravelDecision {
   status: string;
   reason: string;
   userMessage: string;
+  connectHost?: string | null;
+  gamePort?: number | null;
+  queryPort?: number | null;
+  connectionAddress?: string | null;
+  queryAddress?: string | null;
+  connectionSource?: string | null;
+  connectionAvailable?: boolean;
+  connectionUnavailableReason?: string | null;
 }
 
 export interface ActionRequest {

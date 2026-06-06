@@ -144,6 +144,14 @@ pub struct TravelDecision {
     pub status: String,
     pub reason: String,
     pub user_message: String,
+    pub connect_host: Option<String>,
+    pub game_port: Option<u16>,
+    pub query_port: Option<u16>,
+    pub connection_address: Option<String>,
+    pub query_address: Option<String>,
+    pub connection_source: Option<String>,
+    pub connection_available: bool,
+    pub connection_unavailable_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -184,6 +192,10 @@ pub struct TravelHistoryRow {
     pub status: String,
     pub reason: String,
     pub detail: String,
+    pub feedback_attempted: bool,
+    pub feedback_sent: bool,
+    pub feedback_result: String,
+    pub feedback_error: String,
 }
 
 #[derive(Debug, Clone)]
@@ -279,7 +291,7 @@ pub async fn decide(
     if let Some(snapshot) = slot_statuses.iter().find(|snapshot| {
         effective_slot_map_id(config, &snapshot.slot) == map.id && snapshot.status.active
     }) {
-        let decision = travel_decision(
+        let mut decision = travel_decision(
             id,
             true,
             req.map.clone(),
@@ -288,6 +300,7 @@ pub async fn decide(
             "already_online",
             "map already online",
         );
+        set_decision_connection(&mut decision, config, &snapshot.slot, true, "");
         insert_history(pool, &decision, &req, snapshot.key).await?;
         return Ok(decision);
     }
@@ -358,6 +371,14 @@ fn travel_decision(
         status: status.into(),
         reason,
         user_message: String::new(),
+        connect_host: None,
+        game_port: None,
+        query_port: None,
+        connection_address: None,
+        query_address: None,
+        connection_source: None,
+        connection_available: false,
+        connection_unavailable_reason: Some("map not running".into()),
     };
     refresh_user_message(&mut decision);
     decision
@@ -382,17 +403,83 @@ fn refresh_user_message(decision: &mut TravelDecision) {
         .or(decision.resolved_map.as_deref())
         .unwrap_or(decision.requested_map.as_str());
     decision.user_message = match decision.status.as_str() {
-        "starting" => format!("Starting {map_name}. This may take a few minutes."),
-        "already_online" => format!("{map_name} is already running."),
+        "starting" => format!(
+            "Starting {map_name}. This may take a few minutes.{}",
+            connection_sentence(decision)
+        ),
+        "already_online" => format!(
+            "{map_name} is already running.{}",
+            connection_sentence(decision)
+        ),
         "queued" => format!("Cannot start {map_name}: no travel slot is available."),
-        "blocked" => format!("Cannot start {map_name}: {}.", decision.reason),
-        "failed" | "failed_start" => format!("Cannot start {map_name}: {}.", decision.reason),
+        "blocked" => format!(
+            "Cannot start {map_name}: {}",
+            reason_sentence(&decision.reason)
+        ),
+        "failed" | "failed_start" => {
+            format!(
+                "Cannot start {map_name}: {}",
+                reason_sentence(&decision.reason)
+            )
+        }
         "rejected" => format!(
             "Unknown map: {}. Try fjordur, ragnarok, gen1, gen2, aberration, etc.",
             decision.requested_map
         ),
         _ => decision.reason.clone(),
     };
+}
+
+fn reason_sentence(reason: &str) -> String {
+    let trimmed = reason.trim();
+    if trimmed.ends_with(['.', '!', '?']) {
+        trimmed.into()
+    } else {
+        format!("{trimmed}.")
+    }
+}
+
+fn set_decision_connection(
+    decision: &mut TravelDecision,
+    config: &Config,
+    slot: &ServerSlot,
+    available: bool,
+    unavailable_reason: &str,
+) {
+    let host = config.player_connect_host();
+    decision.connect_host = Some(host.clone());
+    decision.game_port = Some(slot.game_port);
+    decision.query_port = Some(slot.query_port);
+    decision.connection_source = Some("slot_config".into());
+    if available && !host.trim().is_empty() && slot.game_port > 0 && slot.query_port > 0 {
+        decision.connection_available = true;
+        decision.connection_address = Some(format!("{host}:{}", slot.game_port));
+        decision.query_address = Some(format!("{host}:{}", slot.query_port));
+        decision.connection_unavailable_reason = None;
+    } else {
+        decision.connection_available = false;
+        decision.connection_address = None;
+        decision.query_address = None;
+        decision.connection_unavailable_reason = Some(unavailable_reason.into());
+    }
+    refresh_user_message(decision);
+}
+
+fn connection_sentence(decision: &TravelDecision) -> String {
+    if decision.connection_available {
+        if let (Some(game), Some(query)) = (
+            decision.connection_address.as_deref(),
+            decision.query_address.as_deref(),
+        ) {
+            return format!(" Connect: {game}. Query/Favorites: {query}.");
+        }
+    }
+    if let Some(reason) = decision.connection_unavailable_reason.as_deref() {
+        if !reason.trim().is_empty() && reason != "map not running" {
+            return format!(" Connection info unavailable: {reason}.");
+        }
+    }
+    String::new()
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -509,6 +596,7 @@ pub async fn request_with_start(
                 "starting",
                 format!("starting {}", map.name),
             );
+            set_decision_connection(&mut decision, config, &snapshot.slot, true, "");
             update_history(pool, &decision, snapshot.key).await?;
         }
         Err(err) => {
@@ -521,7 +609,13 @@ pub async fn request_with_start(
 
 pub async fn history(pool: &SqlitePool) -> Result<Vec<TravelHistoryRow>, sqlx::Error> {
     sqlx::query_as::<_, TravelHistoryRow>(
-        "SELECT id, ts, source, actor, requested_map, resolved_map, chosen_slot, status, reason, detail \
+        "SELECT id, ts, source, actor, requested_map, resolved_map, chosen_slot, status, reason, detail, \
+            CASE WHEN detail LIKE '%feedbackAttempted=true%' THEN 1 ELSE 0 END AS feedback_attempted, \
+            CASE WHEN detail LIKE '%feedbackSent=true%' THEN 1 ELSE 0 END AS feedback_sent, \
+            CASE WHEN detail LIKE '%feedbackResult=sent%' THEN 'sent' \
+                 WHEN detail LIKE '%feedbackResult=failed%' THEN 'failed' ELSE '' END AS feedback_result, \
+            CASE WHEN instr(detail, 'feedbackError=') > 0 \
+                 THEN substr(detail, instr(detail, 'feedbackError=') + length('feedbackError=')) ELSE '' END AS feedback_error \
          FROM travel_requests ORDER BY ts DESC LIMIT 50",
     )
     .fetch_all(pool)
@@ -569,6 +663,19 @@ async fn update_history(
     .bind(detail)
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+pub async fn append_history_detail(
+    pool: &SqlitePool,
+    id: &str,
+    detail: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE travel_requests SET detail = trim(detail || ' ' || ?2) WHERE id = ?1")
+        .bind(id)
+        .bind(detail)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -932,6 +1039,50 @@ mod tests {
 
         assert!(!decision.accepted);
         assert_eq!(decision.status, "queued");
+    }
+
+    #[tokio::test]
+    async fn already_online_decision_includes_connection_info() {
+        let mut cfg = crate::config::tests_support::base_config();
+        cfg.operations.travel_scheduler_enabled = true;
+        cfg.server.player_connect_host = "100.68.7.42".into();
+        let pool = crate::db::init(":memory:").await.unwrap();
+        let slots = cfg.slots.as_ref().unwrap();
+        let travel_a = slots.travel_a.as_ref().unwrap();
+        let decision = decide(
+            &pool,
+            &cfg,
+            TravelRequestBody {
+                map: travel_a.map_key.clone(),
+                source: "test".into(),
+                actor: "tester".into(),
+            },
+            vec![
+                SlotStatusSnapshot {
+                    slot: slots.home.clone(),
+                    key: "home",
+                    status: active_status(&slots.home.systemd_unit),
+                    player_count: Some(0),
+                },
+                SlotStatusSnapshot {
+                    slot: travel_a.clone(),
+                    key: "travel_a",
+                    status: active_status(&travel_a.systemd_unit),
+                    player_count: Some(0),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(decision.status, "already_online");
+        assert!(decision.connection_available);
+        assert_eq!(
+            decision.connection_address.as_deref(),
+            Some("100.68.7.42:7779")
+        );
+        assert_eq!(decision.query_address.as_deref(), Some("100.68.7.42:27017"));
+        assert!(!decision.user_message.contains("27022"));
     }
 
     fn active_status(unit: &str) -> UnitStatus {

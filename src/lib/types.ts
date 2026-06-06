@@ -96,6 +96,14 @@ export interface ArkMap {
   slotId?: string;
   slotRole: string;
   nextAction: string;
+  connectHost: string;
+  gamePort: number;
+  queryPort: number;
+  connectionAddress: string;
+  queryAddress: string;
+  connectionSource: string;
+  connectionAvailable: boolean;
+  connectionUnavailableReason: string;
   config: MapConfigSummary;
   systemdDetail?: SystemdDetail;
 }
