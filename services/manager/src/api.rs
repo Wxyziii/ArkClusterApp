@@ -1864,6 +1864,106 @@ fn systemd_summary(maps: &[ArkMap]) -> serde_json::Value {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetMapBody {
+    map_id: String,
+    #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
+    reason: String,
+}
+
+async fn home_set_map(
+    State(s): State<AppState>,
+    Json(body): Json<SetMapBody>,
+) -> axum::response::Response {
+    if !s.config.operations.systemd_control_enabled {
+        return api_error(
+            StatusCode::FORBIDDEN,
+            "CONTROL_DISABLED",
+            "systemd control is disabled",
+            json!({}),
+        );
+    }
+    if !body.confirm {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "INVALID_CONFIRMATION",
+            "confirm must be true",
+            json!({}),
+        );
+    }
+
+    // Resolve map by id, alias, or ark_map_name.
+    let map_cfg = s.config.maps.iter().find(|m| {
+        m.id == body.map_id
+            || m.alias == body.map_id
+            || m.ark_map_name.eq_ignore_ascii_case(&body.map_id)
+    });
+    let Some(map_cfg) = map_cfg else {
+        return api_error(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            format!("map '{}' not found", body.map_id),
+            json!({}),
+        );
+    };
+    if !map_cfg.can_be_home {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "HOME_PROTECTED",
+            format!("map '{}' has can_be_home = false", map_cfg.id),
+            json!({}),
+        );
+    }
+
+    let ark_map_name = map_cfg.ark_map_name.clone();
+    let map_id = map_cfg.id.clone();
+
+    // Write runtime override so the home slot picks up the new map on next start.
+    let override_path = "/var/lib/ark-cluster-manager/runtime-slots/home.env";
+    let content = format!("ARK_MAP={ark_map_name}\n");
+    match std::fs::write(override_path, &content) {
+        Ok(()) => {}
+        Err(err) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "WRITE_FAILED",
+                format!("failed to write runtime override: {err}"),
+                json!({}),
+            );
+        }
+    }
+
+    let reason = if body.reason.trim().is_empty() {
+        "discord_home_set_map".to_string()
+    } else {
+        body.reason.clone()
+    };
+    audit::record(
+        &s.pool,
+        &AuditEvent::new(Severity::Warn, "Config", "Home map override set")
+            .target(&map_id)
+            .detail(format!(
+                "ark_map_name={ark_map_name} override_path={override_path} reason={reason}"
+            )),
+    )
+    .await;
+
+    Json(json!({
+        "accepted": true,
+        "mapId": map_id,
+        "arkMapName": ark_map_name,
+        "overridePath": override_path,
+        "message": format!(
+            "Home map override set to {ark_map_name}. Restart the Home server for the change to take effect."
+        ),
+        "restartRequired": true
+    }))
+    .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
