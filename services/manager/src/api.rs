@@ -1186,12 +1186,30 @@ fn configured_slot_for_request<'a>(
 ) -> Option<(&'a ServerSlot, &'static str)> {
     let slots = config.slots.as_ref()?;
     let normalized = id.replace('-', "_");
+    // First: match by slot identity (id, key) — most specific.
+    let by_identity = slots.iter().into_iter().find(|(slot, key, _)| {
+        id == slot.id || normalized == *key || id == key.replace('_', "-")
+    });
+    if let Some((slot, key, _)) = by_identity {
+        return Some((slot, key));
+    }
+    // Second: match by effective running map id (follows runtime overrides).
+    // This lets users type the map name that is *currently* running in a slot,
+    // even when the slot's static map_key differs (e.g. travel-a running Aberration
+    // while its static map_key is "ragnarok").
+    let by_effective = slots.iter().into_iter().find(|(slot, _, _)| {
+        let effective = travel_model::effective_slot_map_id(config, slot);
+        effective == id || effective.replace('-', "_") == normalized
+    });
+    if let Some((slot, key, _)) = by_effective {
+        return Some((slot, key));
+    }
+    // Third: fall back to static map_key (lowest priority — avoids hitting
+    // an inactive slot whose map_key matches a map running elsewhere).
     slots
         .iter()
         .into_iter()
-        .find(|(slot, key, _)| {
-            id == slot.id || id == slot.map_key || normalized == *key || id == key.replace('_', "-")
-        })
+        .find(|(slot, _, _)| id == slot.map_key)
         .map(|(slot, key, _)| (slot, key))
 }
 
