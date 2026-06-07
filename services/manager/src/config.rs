@@ -77,6 +77,10 @@ pub struct OperationsConfig {
     #[serde(default = "default_travel_idle_shutdown_secs")]
     pub travel_idle_shutdown_secs: u32,
     #[serde(default)]
+    pub home_idle_shutdown_enabled: bool,
+    #[serde(default = "default_home_idle_shutdown_secs")]
+    pub home_idle_shutdown_secs: u32,
+    #[serde(default)]
     pub config_writes_enabled: bool,
     #[serde(default)]
     pub mod_management_enabled: bool,
@@ -95,6 +99,8 @@ impl Default for OperationsConfig {
             require_confirmation_token: true,
             travel_scheduler_enabled: false,
             travel_idle_shutdown_secs: default_travel_idle_shutdown_secs(),
+            home_idle_shutdown_enabled: false,
+            home_idle_shutdown_secs: default_home_idle_shutdown_secs(),
             config_writes_enabled: false,
             mod_management_enabled: false,
             maintenance_enabled: false,
@@ -382,6 +388,9 @@ fn default_rcon_poll() -> u32 {
 fn default_travel_idle_shutdown_secs() -> u32 {
     10_800
 }
+fn default_home_idle_shutdown_secs() -> u32 {
+    10_800
+}
 fn default_unassigned() -> String {
     "Unassigned".to_string()
 }
@@ -504,6 +513,11 @@ impl Config {
         if self.operations.travel_idle_shutdown_secs == 0 {
             return Err(inv(
                 "operations.travel_idle_shutdown_secs must be > 0".into()
+            ));
+        }
+        if self.operations.home_idle_shutdown_secs == 0 {
+            return Err(inv(
+                "operations.home_idle_shutdown_secs must be > 0".into()
             ));
         }
 

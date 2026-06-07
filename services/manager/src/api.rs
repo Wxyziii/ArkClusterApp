@@ -65,6 +65,7 @@ pub fn router() -> Router<AppState> {
         .route("/maintenance/ark/update", post(maintenance_ark_update))
         .route("/discord/status", get(discord_status))
         .route("/settings", get(settings))
+        .route("/home/set-map", post(home_set_map))
 }
 
 fn ram_pct(s: &crate::models::domain::ResourceSample) -> u32 {

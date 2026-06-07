@@ -174,6 +174,8 @@ pub struct RconRuntimeState {
     seen_lines: HashSet<String>,
     seen_order: VecDeque<String>,
     log_offsets: HashMap<PathBuf, u64>,
+    /// Tracks when the home slot last had 0 players, for home idle shutdown.
+    pub home_idle_since: Option<u64>,
 }
 
 impl RconRuntimeState {
@@ -872,6 +874,7 @@ async fn poll_once(state: &AppState) {
         process_detected_command(state, message).await;
     }
     apply_player_count_policies(state).await;
+    apply_home_idle_shutdown(state).await;
 }
 
 async fn tail_log_chat(state: &AppState) -> Vec<ChatMessage> {
@@ -1327,6 +1330,80 @@ async fn apply_home_standby(state: &AppState) {
             audit::record(
                 &state.pool,
                 &AuditEvent::new(Severity::Error, "Policy", "Home Resource Standby failed")
+                    .target(&slots.home.map_key)
+                    .detail(sanitize_error(&err.to_string())),
+            )
+            .await;
+        }
+    }
+}
+
+async fn apply_home_idle_shutdown(state: &AppState) {
+    if !state.config.operations.systemd_control_enabled
+        || !state.config.operations.home_idle_shutdown_enabled
+    {
+        return;
+    }
+    let threshold = state.config.operations.home_idle_shutdown_secs as u64;
+    let now = epoch_secs();
+    let Some(slots) = &state.config.slots else {
+        return;
+    };
+
+    let mut shutdown_due = false;
+    {
+        let mut runtime = state.rcon_runtime.write().await;
+        let Some(entry) = runtime.slots.get(&slots.home.id).cloned() else {
+            return;
+        };
+        if !entry.active {
+            runtime.home_idle_since = None;
+            return;
+        }
+        match entry.player_count {
+            Some(0) => match runtime.home_idle_since {
+                None => runtime.home_idle_since = Some(now),
+                Some(since) if now.saturating_sub(since) >= threshold => shutdown_due = true,
+                Some(_) => {}
+            },
+            Some(_) => runtime.home_idle_since = None,
+            None => {} // unknown count, don't start timer
+        }
+    }
+
+    if !shutdown_due {
+        return;
+    }
+
+    {
+        let mut runtime = state.rcon_runtime.write().await;
+        runtime.home_idle_since = None;
+    }
+
+    let _ = save_world_if_available(state, &slots.home).await;
+    let _ = backup::run_slot_backup(
+        &state.pool,
+        &state.config,
+        "home",
+        &slots.home,
+        "home_idle_shutdown",
+    )
+    .await;
+    match state.systemd.stop_unit(&slots.home.systemd_unit).await {
+        Ok(()) => {
+            audit::record(
+                &state.pool,
+                &AuditEvent::new(Severity::Warn, "Policy", "Home stopped after idle timeout")
+                    .target(&slots.home.map_key)
+                    .detail(format!("confirmed empty for threshold_secs={threshold}")),
+            )
+            .await;
+            let _ = state.systemd.reset_failed_unit(&slots.home.systemd_unit).await;
+        }
+        Err(err) => {
+            audit::record(
+                &state.pool,
+                &AuditEvent::new(Severity::Error, "Policy", "Home idle shutdown failed")
                     .target(&slots.home.map_key)
                     .detail(sanitize_error(&err.to_string())),
             )
