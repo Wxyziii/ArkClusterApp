@@ -144,6 +144,55 @@ pub struct ResourceGuardConfig {
     pub min_free_swap_mb: u32,
     #[serde(default = "default_min_disk_free_gb")]
     pub min_disk_free_gb: u32,
+    /// Per-map memory estimates in MB keyed by ARK map name (e.g. "Genesis").
+    /// Overrides built-in defaults when set.
+    #[serde(default)]
+    pub map_memory_mb: std::collections::HashMap<String, u32>,
+    /// Memory estimate for maps not in the estimates table (conservative high).
+    #[serde(default = "default_unknown_map_memory_mb")]
+    pub unknown_map_memory_mb: u32,
+    /// Safety reserve added on top of the per-map estimate.
+    #[serde(default = "default_map_memory_reserve_mb")]
+    pub map_memory_reserve_mb: u32,
+    /// Additional reserve required when a second travel slot is already running.
+    #[serde(default = "default_second_slot_extra_mb")]
+    pub second_slot_extra_mb: u32,
+}
+
+impl ResourceGuardConfig {
+    /// Return the memory estimate (MB) for the given ARK map name.
+    /// Checks config overrides first, then built-in defaults, then unknown_map_memory_mb.
+    pub fn map_estimate_mb(&self, ark_map_name: &str) -> u32 {
+        let key = ark_map_name.to_ascii_lowercase();
+        if let Some(&v) = self
+            .map_memory_mb
+            .iter()
+            .find(|(k, _)| k.to_ascii_lowercase() == key)
+            .map(|(_, v)| v)
+        {
+            return v;
+        }
+        builtin_map_estimate_mb(&key).unwrap_or(self.unknown_map_memory_mb)
+    }
+}
+
+/// Built-in per-map memory estimates (MB) keyed by lowercase ARK map name.
+fn builtin_map_estimate_mb(key: &str) -> Option<u32> {
+    Some(match key {
+        "theisland" => 6_000,
+        "aberration_p" => 7_000,
+        "fjordur" => 8_500,
+        "ragnarok" => 8_500,
+        "valguero_p" => 8_500,
+        "crystalisles" => 8_000,
+        "lostisland" => 9_000,
+        "thecenter" => 8_000,
+        "scorchedearth_p" => 9_000,
+        "extinction" => 9_500,
+        "genesis" => 11_000,
+        "gen2" => 11_000,
+        _ => return None,
+    })
 }
 
 impl Default for ResourceGuardConfig {
@@ -158,6 +207,10 @@ impl Default for ResourceGuardConfig {
             max_swap_used_percent: default_max_swap_used_percent(),
             min_free_swap_mb: default_min_free_swap_mb(),
             min_disk_free_gb: default_min_disk_free_gb(),
+            map_memory_mb: std::collections::HashMap::new(),
+            unknown_map_memory_mb: default_unknown_map_memory_mb(),
+            map_memory_reserve_mb: default_map_memory_reserve_mb(),
+            second_slot_extra_mb: default_second_slot_extra_mb(),
         }
     }
 }
@@ -296,6 +349,15 @@ fn default_min_free_swap_mb() -> u32 {
 }
 fn default_min_disk_free_gb() -> u32 {
     10
+}
+fn default_unknown_map_memory_mb() -> u32 {
+    11_000
+}
+fn default_map_memory_reserve_mb() -> u32 {
+    1_500
+}
+fn default_second_slot_extra_mb() -> u32 {
+    2_000
 }
 fn default_rcon_poll() -> u32 {
     5

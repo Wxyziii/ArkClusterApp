@@ -98,6 +98,7 @@ pub trait SystemdController: Send + Sync {
     async fn start_unit(&self, unit: &str) -> Result<(), SystemdError>;
     async fn stop_unit(&self, unit: &str) -> Result<(), SystemdError>;
     async fn restart_unit(&self, unit: &str) -> Result<(), SystemdError>;
+    async fn reset_failed_unit(&self, unit: &str) -> Result<(), SystemdError>;
 }
 
 #[derive(Debug, Default, Clone)]
@@ -174,6 +175,9 @@ impl SystemdController for RealSystemd {
     async fn restart_unit(&self, unit: &str) -> Result<(), SystemdError> {
         run_systemctl_action("restart", unit).await
     }
+    async fn reset_failed_unit(&self, unit: &str) -> Result<(), SystemdError> {
+        run_systemctl_action("reset-failed", unit).await
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -212,6 +216,9 @@ impl SystemdController for TestSystemd {
         Err(SystemdError::NotImplemented(unit.to_string()))
     }
     async fn restart_unit(&self, unit: &str) -> Result<(), SystemdError> {
+        Err(SystemdError::NotImplemented(unit.to_string()))
+    }
+    async fn reset_failed_unit(&self, unit: &str) -> Result<(), SystemdError> {
         Err(SystemdError::NotImplemented(unit.to_string()))
     }
 }

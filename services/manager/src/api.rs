@@ -114,7 +114,7 @@ async fn status(State(s): State<AppState>) -> impl IntoResponse {
     let systemd = systemd_summary(&maps);
     let active_travel_slots = active_travel_slot_count_from_maps(&maps);
     let resource_guard =
-        operations::travel_resource_guard_status(&s.config, &res, active_travel_slots);
+        operations::travel_resource_guard_status(&s.config, &res, active_travel_slots, None);
     let running = maps
         .iter()
         .filter(|m| matches!(m.state.as_str(), "Online" | "Ready" | "Starting"))
@@ -316,7 +316,7 @@ async fn travel(State(s): State<AppState>) -> impl IntoResponse {
     let res = resources::sample(&s.config.cluster.directory, s.manager_started_at).await;
     let active_travel_slots = active_travel_slot_count_from_statuses(&statuses);
     let resource_guard =
-        operations::travel_resource_guard_status(&s.config, &res, active_travel_slots);
+        operations::travel_resource_guard_status(&s.config, &res, active_travel_slots, None);
     let slots = statuses
         .iter()
         .map(|snapshot| {
@@ -441,7 +441,7 @@ async fn resources(State(s): State<AppState>) -> impl IntoResponse {
     let maps = maps_with_status(&s).await;
     let active_travel_slots = active_travel_slot_count_from_maps(&maps);
     let resource_guard =
-        operations::travel_resource_guard_status(&s.config, &res, active_travel_slots);
+        operations::travel_resource_guard_status(&s.config, &res, active_travel_slots, None);
     let player_counts_available = maps
         .iter()
         .filter(|m| m.configured && matches!(m.state.as_str(), "Online" | "Ready" | "Starting"))
@@ -1048,6 +1048,7 @@ async fn server_systemd_action(
         sample: &sample,
         active_travel_slots,
         player_count,
+        map_ark_name: None,
     }) {
         audit::record(
             &s.pool,
@@ -1088,7 +1089,15 @@ async fn server_systemd_action(
 
     let result = match action {
         ServerAction::Start => s.systemd.start_unit(&slot.systemd_unit).await,
-        ServerAction::Stop => s.systemd.stop_unit(&slot.systemd_unit).await,
+        ServerAction::Stop => {
+            let r = s.systemd.stop_unit(&slot.systemd_unit).await;
+            if r.is_ok() {
+                // ARK may core-dump on controlled stop; reset-failed so the unit
+                // can start cleanly without manual intervention.
+                let _ = s.systemd.reset_failed_unit(&slot.systemd_unit).await;
+            }
+            r
+        }
         ServerAction::Restart => s.systemd.restart_unit(&slot.systemd_unit).await,
         ServerAction::Backup => unreachable!("backup handled separately"),
     };
@@ -1767,6 +1776,17 @@ fn apply_connection_to_map(map: &mut ArkMap, config: &crate::config::Config, slo
         map.connection_address.clear();
         map.query_address.clear();
         map.connection_unavailable_reason = "slot game/query port is not configured".into();
+        return;
+    }
+    // When RCON is enabled, require an active RCON connection before advertising the server as
+    // connectable. systemd "active" fires before game ports are open; RCON connection is a
+    // reliable proxy for the game being ready to accept players.
+    if config.rcon.enabled && map.rcon != "Connected" {
+        map.connection_available = false;
+        map.connection_source = "rcon".into();
+        map.connection_address.clear();
+        map.query_address.clear();
+        map.connection_unavailable_reason = "server loading: waiting for RCON connection".into();
         return;
     }
     map.connection_available = true;

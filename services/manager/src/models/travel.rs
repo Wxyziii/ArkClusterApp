@@ -572,6 +572,7 @@ pub async fn request_with_start(
         sample: &sample,
         active_travel_slots,
         player_count: 0,
+        map_ark_name: Some(map.ark_map_name.clone()),
     }) {
         set_decision_status(&mut decision, false, "blocked", err.message());
         update_history(pool, &decision, "guard_blocked").await?;
@@ -596,7 +597,13 @@ pub async fn request_with_start(
                 "starting",
                 format!("starting {}", map.name),
             );
-            set_decision_connection(&mut decision, config, &snapshot.slot, true, "");
+            set_decision_connection(
+                &mut decision,
+                config,
+                &snapshot.slot,
+                false,
+                "server starting: waiting for game ports to open",
+            );
             update_history(pool, &decision, snapshot.key).await?;
         }
         Err(err) => {

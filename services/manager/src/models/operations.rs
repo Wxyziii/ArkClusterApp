@@ -150,6 +150,8 @@ pub struct TravelResourceGuardStatus {
     pub min_free_swap_mb: u32,
     pub disk_free_gb: f64,
     pub min_disk_free_gb: u32,
+    /// Map-specific memory estimate used for the RAM floor calculation (0 when not map-aware).
+    pub map_memory_estimate_mb: u32,
 }
 
 impl GuardError {
@@ -187,6 +189,8 @@ pub struct SystemdGuardInput<'a> {
     pub sample: &'a ResourceSample,
     pub active_travel_slots: usize,
     pub player_count: u32,
+    /// ARK map name for the destination slot (e.g. "Genesis"). None → use legacy generic thresholds.
+    pub map_ark_name: Option<String>,
 }
 
 pub fn guard_systemd_action(input: SystemdGuardInput<'_>) -> Result<(), GuardError> {
@@ -234,7 +238,7 @@ pub fn guard_systemd_action(input: SystemdGuardInput<'_>) -> Result<(), GuardErr
         return Err(GuardError::ControlDisabled);
     }
     if action == ServerAction::Start {
-        guard_travel_start(config, sample, active_travel_slots)?;
+        guard_travel_start(config, sample, active_travel_slots, input.map_ark_name.as_deref())?;
     }
     Ok(())
 }
@@ -253,8 +257,9 @@ fn guard_travel_start(
     config: &Config,
     sample: &ResourceSample,
     active_travel_slots: usize,
+    map_ark_name: Option<&str>,
 ) -> Result<(), GuardError> {
-    let status = travel_resource_guard_status(config, sample, active_travel_slots);
+    let status = travel_resource_guard_status(config, sample, active_travel_slots, map_ark_name);
     if status.allowed {
         Ok(())
     } else {
@@ -266,13 +271,28 @@ pub fn travel_resource_guard_status(
     config: &Config,
     sample: &ResourceSample,
     active_travel_slots: usize,
+    map_ark_name: Option<&str>,
 ) -> TravelResourceGuardStatus {
     let guard = &config.resource_guard;
     let max_travel_servers = config.resource_policy.max_travel_servers;
-    let min_available_ram_mb = if active_travel_slots == 0 {
-        guard.min_available_ram_mb_for_first_travel
-    } else {
-        guard.min_available_ram_mb_for_second_travel
+    let (min_available_ram_mb, map_memory_estimate_mb) = match map_ark_name {
+        Some(name) => {
+            let estimate = guard.map_estimate_mb(name);
+            let extra = if active_travel_slots == 0 {
+                0
+            } else {
+                guard.second_slot_extra_mb
+            };
+            (estimate + guard.map_memory_reserve_mb + extra, estimate)
+        }
+        None => {
+            let threshold = if active_travel_slots == 0 {
+                guard.min_available_ram_mb_for_first_travel
+            } else {
+                guard.min_available_ram_mb_for_second_travel
+            };
+            (threshold, 0)
+        }
     };
     let available_ram_mb = gb_to_mb(sample.ram_available_gb);
     let ram_used_percent = pct_u32(sample.ram_used_gb, sample.ram_total_gb);
@@ -360,6 +380,7 @@ pub fn travel_resource_guard_status(
         min_free_swap_mb: guard.min_free_swap_mb,
         disk_free_gb: sample.disk_free_gb,
         min_disk_free_gb: guard.min_disk_free_gb,
+        map_memory_estimate_mb,
     }
 }
 
@@ -423,6 +444,7 @@ mod tests {
                 sample: &test_data::resources(),
                 active_travel_slots: 0,
                 player_count: 0,
+                map_ark_name: None,
             }),
             Err(GuardError::HomeProtected)
         );
@@ -448,6 +470,7 @@ mod tests {
                 sample: &test_data::resources(),
                 active_travel_slots: 0,
                 player_count: 0,
+                map_ark_name: None,
             }),
             Err(GuardError::InvalidConfirmation)
         );
@@ -475,6 +498,7 @@ mod tests {
                 sample: &sample,
                 active_travel_slots: 0,
                 player_count: 0,
+                map_ark_name: None,
             }),
             Err(GuardError::ResourcePolicyBlocked(_))
         ));
@@ -483,7 +507,7 @@ mod tests {
     #[test]
     fn travel_resource_guard_allows_first_travel_when_safe() {
         let c = cfg();
-        let status = travel_resource_guard_status(&c, &safe_sample(), 0);
+        let status = travel_resource_guard_status(&c, &safe_sample(), 0, None);
         assert!(status.allowed);
         assert_eq!(status.reason, "Resource guard passed.");
         assert_eq!(status.min_available_ram_mb, 6144);
@@ -492,7 +516,7 @@ mod tests {
     #[test]
     fn travel_resource_guard_rejects_unknown_resource_sample() {
         let c = cfg();
-        let status = travel_resource_guard_status(&c, &test_data::resources(), 0);
+        let status = travel_resource_guard_status(&c, &test_data::resources(), 0, None);
         assert!(!status.allowed);
         assert!(status.reason.contains("resource sample unavailable"));
     }
@@ -501,7 +525,7 @@ mod tests {
     fn travel_resource_guard_can_skip_unknown_resource_sample_by_config() {
         let mut c = cfg();
         c.resource_guard.block_on_unknown_resources = false;
-        let status = travel_resource_guard_status(&c, &test_data::resources(), 0);
+        let status = travel_resource_guard_status(&c, &test_data::resources(), 0, None);
         assert!(status.allowed);
         assert!(status.reason.contains("skipped by config"));
     }
@@ -511,7 +535,7 @@ mod tests {
         let c = cfg();
         let mut sample = safe_sample();
         sample.ram_available_gb = 5.0;
-        let status = travel_resource_guard_status(&c, &sample, 0);
+        let status = travel_resource_guard_status(&c, &sample, 0, None);
         assert!(!status.allowed);
         assert!(status.reason.contains("not enough available RAM"));
     }
@@ -520,8 +544,8 @@ mod tests {
     fn travel_resource_guard_rejects_second_slot_with_stricter_ram_floor() {
         let c = cfg();
         let sample = safe_sample();
-        assert!(travel_resource_guard_status(&c, &sample, 0).allowed);
-        let status = travel_resource_guard_status(&c, &sample, 1);
+        assert!(travel_resource_guard_status(&c, &sample, 0, None).allowed);
+        let status = travel_resource_guard_status(&c, &sample, 1, None);
         assert!(!status.allowed);
         assert_eq!(status.min_available_ram_mb, 10240);
         assert!(status.reason.contains("not enough available RAM"));
@@ -533,7 +557,7 @@ mod tests {
         let mut sample = safe_sample();
         sample.ram_used_gb = 13.0;
         sample.ram_available_gb = 10.0;
-        let status = travel_resource_guard_status(&c, &sample, 0);
+        let status = travel_resource_guard_status(&c, &sample, 0, None);
         assert!(!status.allowed);
         assert!(status.reason.contains("RAM usage is too high"));
     }
@@ -544,7 +568,7 @@ mod tests {
         let mut sample = safe_sample();
         sample.swap_used_gb = 2.0;
         sample.swap_total_gb = 4.0;
-        let status = travel_resource_guard_status(&c, &sample, 0);
+        let status = travel_resource_guard_status(&c, &sample, 0, None);
         assert!(!status.allowed);
         assert!(status.reason.contains("swap usage is too high"));
     }
@@ -556,7 +580,7 @@ mod tests {
         let mut sample = safe_sample();
         sample.swap_used_gb = 2.2;
         sample.swap_total_gb = 4.0;
-        let status = travel_resource_guard_status(&c, &sample, 0);
+        let status = travel_resource_guard_status(&c, &sample, 0, None);
         assert!(!status.allowed);
         assert!(status.reason.contains("free swap is too low"));
     }
@@ -566,7 +590,7 @@ mod tests {
         let c = cfg();
         let mut sample = safe_sample();
         sample.disk_free_gb = 9.0;
-        let status = travel_resource_guard_status(&c, &sample, 0);
+        let status = travel_resource_guard_status(&c, &sample, 0, None);
         assert!(!status.allowed);
         assert!(status.reason.contains("disk free space is too low"));
     }
@@ -574,8 +598,56 @@ mod tests {
     #[test]
     fn travel_resource_guard_rejects_max_active_travel_slots() {
         let c = cfg();
-        let status = travel_resource_guard_status(&c, &safe_sample(), 2);
+        let status = travel_resource_guard_status(&c, &safe_sample(), 2, None);
         assert!(!status.allowed);
         assert!(status.reason.contains("already at max"));
+    }
+
+    #[test]
+    fn map_aware_guard_rejects_genesis_with_10gb_available() {
+        let c = cfg();
+        let mut sample = safe_sample();
+        // 10 GB available — passes legacy 6 GB threshold but fails Genesis (11 GB + 1.5 GB reserve = 12.5 GB)
+        sample.ram_available_gb = 10.0;
+        let status = travel_resource_guard_status(&c, &sample, 0, Some("Genesis"));
+        assert!(!status.allowed, "Genesis must be rejected when only 10 GB free");
+        assert!(status.reason.contains("not enough available RAM"));
+        assert_eq!(status.map_memory_estimate_mb, 11_000);
+        assert_eq!(status.min_available_ram_mb, 11_000 + 1_500); // estimate + reserve
+    }
+
+    #[test]
+    fn map_aware_guard_allows_genesis_with_13gb_available() {
+        let c = cfg();
+        let mut sample = safe_sample();
+        sample.ram_available_gb = 13.0;
+        let status = travel_resource_guard_status(&c, &sample, 0, Some("Genesis"));
+        assert!(status.allowed, "Genesis must pass with 13 GB free");
+        assert_eq!(status.map_memory_estimate_mb, 11_000);
+    }
+
+    #[test]
+    fn map_aware_guard_uses_config_override_over_builtin() {
+        let mut c = cfg();
+        c.resource_guard
+            .map_memory_mb
+            .insert("Ragnarok".into(), 10_000);
+        let mut sample = safe_sample();
+        sample.ram_available_gb = 12.0;
+        // config override 10000 + 1500 reserve = 11500 → should pass
+        let status = travel_resource_guard_status(&c, &sample, 0, Some("Ragnarok"));
+        assert!(status.allowed);
+        assert_eq!(status.map_memory_estimate_mb, 10_000);
+    }
+
+    #[test]
+    fn map_aware_guard_uses_unknown_map_memory_for_unrecognized_map() {
+        let c = cfg();
+        let mut sample = safe_sample();
+        sample.ram_available_gb = 10.0;
+        // Unknown map → unknown_map_memory_mb default 11000 + 1500 reserve = 12500 MB → reject
+        let status = travel_resource_guard_status(&c, &sample, 0, Some("SomeNewMap"));
+        assert!(!status.allowed);
+        assert_eq!(status.map_memory_estimate_mb, 11_000);
     }
 }

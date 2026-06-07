@@ -1250,6 +1250,9 @@ async fn apply_player_count_policies(state: &AppState) {
                         .detail(format!("slot={} threshold_secs={threshold}", slot.id)),
                     )
                     .await;
+                    // ARK may exit via SIGABRT after a controlled stop; reset-failed clears
+                    // any "failed" state left behind so the unit can start cleanly next time.
+                    let _ = state.systemd.reset_failed_unit(&slot.systemd_unit).await;
                 }
                 Err(err) => {
                     audit::record(
@@ -1318,6 +1321,7 @@ async fn apply_home_standby(state: &AppState) {
                     ),
             )
             .await;
+            let _ = state.systemd.reset_failed_unit(&slots.home.systemd_unit).await;
         }
         Err(err) => {
             audit::record(
@@ -1531,6 +1535,7 @@ mod tests {
 
     #[test]
     fn ark_feedback_uses_player_safe_message() {
+        // Ports not yet open when systemd reports "starting" — connection info must be absent.
         let decision = travel::TravelDecision {
             id: "travel-1".into(),
             accepted: true,
@@ -1540,19 +1545,19 @@ mod tests {
             chosen_slot: Some("travel-a".into()),
             status: "starting".into(),
             reason: "starting Genesis: Part 1".into(),
-            user_message: "Starting Genesis: Part 1. This may take a few minutes. Connect: 100.68.7.42:7781. Query/Favorites: 100.68.7.42:27016.".into(),
+            user_message: "Starting Genesis: Part 1. This may take a few minutes. Connection info unavailable: server starting: waiting for game ports to open.".into(),
             connect_host: Some("100.68.7.42".into()),
             game_port: Some(7781),
             query_port: Some(27016),
-            connection_address: Some("100.68.7.42:7781".into()),
-            query_address: Some("100.68.7.42:27016".into()),
+            connection_address: None,
+            query_address: None,
             connection_source: Some("slot_config".into()),
-            connection_available: true,
-            connection_unavailable_reason: None,
+            connection_available: false,
+            connection_unavailable_reason: Some("server starting: waiting for game ports to open".into()),
         };
         assert_eq!(
             ark_feedback_for_decision(&decision),
-            "[ARK Cluster] Starting Genesis: Part 1. This may take a few minutes. Connect: 100.68.7.42:7781. Query/Favorites: 100.68.7.42:27016."
+            "[ARK Cluster] Starting Genesis: Part 1. This may take a few minutes. Connection info unavailable: server starting: waiting for game ports to open."
         );
         assert_eq!(sanitize_chat_message("a\n b\r c"), "a b c");
     }
