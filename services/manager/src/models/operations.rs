@@ -145,13 +145,18 @@ pub struct TravelResourceGuardStatus {
     pub ram_used_percent: u32,
     pub max_ram_used_percent: u8,
     pub swap_used_percent: u32,
-    pub max_swap_used_percent: u8,
+    pub swap_used_percent_warn: u8,
+    pub swap_used_percent_hard: u8,
     pub free_swap_mb: u32,
     pub min_free_swap_mb: u32,
+    pub active_swap_io_pages: u64,
     pub disk_free_gb: f64,
     pub min_disk_free_gb: u32,
     /// Map-specific memory estimate used for the RAM floor calculation (0 when not map-aware).
     pub map_memory_estimate_mb: u32,
+    /// Non-blocking swap warning (swap elevated but RAM is healthy and hard block not triggered).
+    pub swap_warning: bool,
+    pub swap_warning_reason: String,
 }
 
 impl GuardError {
@@ -296,9 +301,14 @@ pub fn travel_resource_guard_status(
     };
     let available_ram_mb = gb_to_mb(sample.ram_available_gb);
     let ram_used_percent = pct_u32(sample.ram_used_gb, sample.ram_total_gb);
+    let swap_configured = sample.swap_total_gb > 0.0;
     let swap_used_percent = pct_u32(sample.swap_used_gb, sample.swap_total_gb);
     let free_swap_mb = gb_to_mb((sample.swap_total_gb - sample.swap_used_gb).max(0.0));
+    let active_swap_io_pages = sample.swap_io_pages;
     let resources_unknown = sample.source != "host" || sample.ram_total_gb <= 0.0;
+
+    let mut swap_warning = false;
+    let mut swap_warning_reason = String::new();
 
     let (allowed, reason) = if !guard.enabled {
         (true, "Resource guard disabled by config.".into())
@@ -324,7 +334,7 @@ pub fn travel_resource_guard_status(
         (
             false,
             format!(
-                "Travel rejected: not enough available RAM ({available_ram_mb} MB available, need {min_available_ram_mb} MB)."
+                "Travel rejected: insufficient available RAM ({available_ram_mb} MB available, need {min_available_ram_mb} MB)."
             ),
         )
     } else if ram_used_percent > guard.max_ram_used_percent_before_travel as u32 {
@@ -335,15 +345,26 @@ pub fn travel_resource_guard_status(
                 guard.max_ram_used_percent_before_travel
             ),
         )
-    } else if swap_used_percent > guard.max_swap_used_percent as u32 {
+    } else if swap_configured
+        && guard.active_swap_io_block_threshold_pages > 0
+        && active_swap_io_pages >= guard.active_swap_io_block_threshold_pages
+    {
         (
             false,
             format!(
-                "Travel rejected: swap usage is too high ({swap_used_percent}% used, max {}%).",
-                guard.max_swap_used_percent
+                "Travel rejected: active swap I/O detected ({active_swap_io_pages} pages in sample window, threshold {}).",
+                guard.active_swap_io_block_threshold_pages
             ),
         )
-    } else if free_swap_mb < guard.min_free_swap_mb {
+    } else if swap_configured && swap_used_percent >= guard.swap_used_percent_hard as u32 {
+        (
+            false,
+            format!(
+                "Travel rejected: swap usage is critically high ({swap_used_percent}% used, hard limit {}%).",
+                guard.swap_used_percent_hard
+            ),
+        )
+    } else if swap_configured && free_swap_mb < guard.min_free_swap_mb {
         (
             false,
             format!(
@@ -360,6 +381,13 @@ pub fn travel_resource_guard_status(
             ),
         )
     } else {
+        // RAM guard passed. Check for non-blocking swap warning.
+        if swap_configured && swap_used_percent >= guard.swap_used_percent_warn as u32 {
+            swap_warning = true;
+            swap_warning_reason = format!(
+                "Swap usage is elevated ({swap_used_percent}% used), but RAM is healthy."
+            );
+        }
         (true, "Resource guard passed.".into())
     };
 
@@ -375,12 +403,16 @@ pub fn travel_resource_guard_status(
         ram_used_percent,
         max_ram_used_percent: guard.max_ram_used_percent_before_travel,
         swap_used_percent,
-        max_swap_used_percent: guard.max_swap_used_percent,
+        swap_used_percent_warn: guard.swap_used_percent_warn,
+        swap_used_percent_hard: guard.swap_used_percent_hard,
         free_swap_mb,
         min_free_swap_mb: guard.min_free_swap_mb,
+        active_swap_io_pages,
         disk_free_gb: sample.disk_free_gb,
         min_disk_free_gb: guard.min_disk_free_gb,
         map_memory_estimate_mb,
+        swap_warning,
+        swap_warning_reason,
     }
 }
 
@@ -420,6 +452,7 @@ mod tests {
         sample.swap_used_gb = 0.2;
         sample.swap_total_gb = 4.0;
         sample.disk_free_gb = 100.0;
+        sample.swap_io_pages = 0;
         sample
     }
 
@@ -537,7 +570,7 @@ mod tests {
         sample.ram_available_gb = 5.0;
         let status = travel_resource_guard_status(&c, &sample, 0, None);
         assert!(!status.allowed);
-        assert!(status.reason.contains("not enough available RAM"));
+        assert!(status.reason.contains("insufficient available RAM"));
     }
 
     #[test]
@@ -548,7 +581,7 @@ mod tests {
         let status = travel_resource_guard_status(&c, &sample, 1, None);
         assert!(!status.allowed);
         assert_eq!(status.min_available_ram_mb, 10240);
-        assert!(status.reason.contains("not enough available RAM"));
+        assert!(status.reason.contains("insufficient available RAM"));
     }
 
     #[test]
@@ -563,26 +596,81 @@ mod tests {
     }
 
     #[test]
-    fn travel_resource_guard_rejects_high_swap_used_percent() {
+    fn swap_38pct_with_healthy_ram_is_warning_not_block() {
+        // Reproduces the original blocking scenario: 38% swap, no active I/O, RAM healthy.
         let c = cfg();
         let mut sample = safe_sample();
-        sample.swap_used_gb = 2.0;
+        sample.swap_used_gb = 1.52; // 38% of 4 GB
+        sample.swap_total_gb = 4.0;
+        sample.swap_io_pages = 0;
+        let status = travel_resource_guard_status(&c, &sample, 0, None);
+        assert!(status.allowed, "38% swap must not block when RAM is healthy: {}", status.reason);
+        assert!(status.swap_warning, "should have swap warning at 38%");
+        assert!(status.swap_warning_reason.contains("elevated"));
+    }
+
+    #[test]
+    fn swap_80pct_is_hard_blocked() {
+        let c = cfg();
+        let mut sample = safe_sample();
+        sample.swap_used_gb = 3.2; // 80% of 4 GB
         sample.swap_total_gb = 4.0;
         let status = travel_resource_guard_status(&c, &sample, 0, None);
         assert!(!status.allowed);
-        assert!(status.reason.contains("swap usage is too high"));
+        assert!(status.reason.contains("critically high"), "reason: {}", status.reason);
     }
 
     #[test]
     fn travel_resource_guard_rejects_low_free_swap() {
-        let mut c = cfg();
-        c.resource_guard.max_swap_used_percent = 90;
+        let c = cfg();
         let mut sample = safe_sample();
-        sample.swap_used_gb = 2.2;
+        // Swap total = 4 GB, used 3.2 GB → free = 0.8 GB = 819 MB < min 1024 MB
+        sample.swap_used_gb = 3.2;
         sample.swap_total_gb = 4.0;
+        // Ensure swap_used_percent_hard allows (3.2/4.0 = 80% == hard limit); lower hard limit
+        // for this test so free-swap check is reached at a lower usage percentage.
+        let mut c2 = c;
+        c2.resource_guard.swap_used_percent_hard = 90;
+        let status = travel_resource_guard_status(&c2, &sample, 0, None);
+        assert!(!status.allowed);
+        assert!(status.reason.contains("free swap is too low"), "reason: {}", status.reason);
+    }
+
+    #[test]
+    fn no_swap_configured_skips_all_swap_checks() {
+        // Server with no swap at all (Linux without swap file/partition).
+        let c = cfg();
+        let mut sample = safe_sample();
+        sample.swap_used_gb = 0.0;
+        sample.swap_total_gb = 0.0;
+        sample.swap_io_pages = 2000; // would block if swap checks applied
+        let status = travel_resource_guard_status(&c, &sample, 0, None);
+        assert!(status.allowed, "no-swap server must not be blocked by swap checks: {}", status.reason);
+        assert!(!status.swap_warning, "no warning when swap not configured");
+    }
+
+    #[test]
+    fn active_swap_io_blocks_travel() {
+        let c = cfg();
+        let mut sample = safe_sample();
+        sample.swap_used_gb = 0.5; // only 12.5%, below warn
+        sample.swap_total_gb = 4.0;
+        sample.swap_io_pages = 2000; // above default threshold of 1024
         let status = travel_resource_guard_status(&c, &sample, 0, None);
         assert!(!status.allowed);
-        assert!(status.reason.contains("free swap is too low"));
+        assert!(status.reason.contains("active swap I/O"), "reason: {}", status.reason);
+    }
+
+    #[test]
+    fn active_swap_io_check_disabled_when_threshold_zero() {
+        let mut c = cfg();
+        c.resource_guard.active_swap_io_block_threshold_pages = 0;
+        let mut sample = safe_sample();
+        sample.swap_used_gb = 0.5;
+        sample.swap_total_gb = 4.0;
+        sample.swap_io_pages = 999_999;
+        let status = travel_resource_guard_status(&c, &sample, 0, None);
+        assert!(status.allowed, "swap I/O check should be skipped when threshold is 0");
     }
 
     #[test]
@@ -611,7 +699,7 @@ mod tests {
         sample.ram_available_gb = 10.0;
         let status = travel_resource_guard_status(&c, &sample, 0, Some("Genesis"));
         assert!(!status.allowed, "Genesis must be rejected when only 10 GB free");
-        assert!(status.reason.contains("not enough available RAM"));
+        assert!(status.reason.contains("insufficient available RAM"));
         assert_eq!(status.map_memory_estimate_mb, 11_000);
         assert_eq!(status.min_available_ram_mb, 11_000 + 1_500); // estimate + reserve
     }

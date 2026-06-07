@@ -138,10 +138,19 @@ pub struct ResourceGuardConfig {
     pub min_available_ram_mb_for_second_travel: u32,
     #[serde(default = "default_max_ram_used_percent_before_travel")]
     pub max_ram_used_percent_before_travel: u8,
-    #[serde(default = "default_max_swap_used_percent")]
-    pub max_swap_used_percent: u8,
+    /// Swap usage % above which a warning is emitted (does not block by itself).
+    #[serde(default = "default_swap_used_percent_warn")]
+    pub swap_used_percent_warn: u8,
+    /// Swap usage % at or above which travel is hard-blocked.
+    #[serde(default = "default_swap_used_percent_hard")]
+    pub swap_used_percent_hard: u8,
+    /// Minimum free swap MB required when swap is configured. Skipped when swap_total = 0.
     #[serde(default = "default_min_free_swap_mb")]
     pub min_free_swap_mb: u32,
+    /// Block travel if the swap I/O page delta over the sample window exceeds this value.
+    /// 0 = disabled.
+    #[serde(default = "default_active_swap_io_block_threshold_pages")]
+    pub active_swap_io_block_threshold_pages: u64,
     #[serde(default = "default_min_disk_free_gb")]
     pub min_disk_free_gb: u32,
     /// Per-map memory estimates in MB keyed by ARK map name (e.g. "Genesis").
@@ -204,8 +213,10 @@ impl Default for ResourceGuardConfig {
             min_available_ram_mb_for_second_travel: default_min_available_ram_mb_for_second_travel(
             ),
             max_ram_used_percent_before_travel: default_max_ram_used_percent_before_travel(),
-            max_swap_used_percent: default_max_swap_used_percent(),
+            swap_used_percent_warn: default_swap_used_percent_warn(),
+            swap_used_percent_hard: default_swap_used_percent_hard(),
             min_free_swap_mb: default_min_free_swap_mb(),
+            active_swap_io_block_threshold_pages: default_active_swap_io_block_threshold_pages(),
             min_disk_free_gb: default_min_disk_free_gb(),
             map_memory_mb: std::collections::HashMap::new(),
             unknown_map_memory_mb: default_unknown_map_memory_mb(),
@@ -341,11 +352,17 @@ fn default_min_available_ram_mb_for_second_travel() -> u32 {
 fn default_max_ram_used_percent_before_travel() -> u8 {
     80
 }
-fn default_max_swap_used_percent() -> u8 {
+fn default_swap_used_percent_warn() -> u8 {
     25
 }
+fn default_swap_used_percent_hard() -> u8 {
+    75
+}
 fn default_min_free_swap_mb() -> u32 {
-    2 * 1024
+    1024
+}
+fn default_active_swap_io_block_threshold_pages() -> u64 {
+    1024
 }
 fn default_min_disk_free_gb() -> u32 {
     10
@@ -449,9 +466,15 @@ impl Config {
                 "resource_guard.max_ram_used_percent_before_travel must be <= 100".into(),
             ));
         }
-        if g.max_swap_used_percent > 100 {
+        if g.swap_used_percent_hard > 100 {
             return Err(inv(
-                "resource_guard.max_swap_used_percent must be <= 100".into()
+                "resource_guard.swap_used_percent_hard must be <= 100".into(),
+            ));
+        }
+        if g.swap_used_percent_warn >= g.swap_used_percent_hard {
+            return Err(inv(
+                "resource_guard.swap_used_percent_warn must be less than swap_used_percent_hard"
+                    .into(),
             ));
         }
         if g.min_available_ram_mb_for_second_travel < g.min_available_ram_mb_for_first_travel {

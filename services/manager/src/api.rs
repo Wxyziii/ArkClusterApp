@@ -971,8 +971,10 @@ async fn settings(State(s): State<AppState>) -> impl IntoResponse {
             "minAvailableRamMbForFirstTravel": g.min_available_ram_mb_for_first_travel,
             "minAvailableRamMbForSecondTravel": g.min_available_ram_mb_for_second_travel,
             "maxRamUsedPercentBeforeTravel": g.max_ram_used_percent_before_travel,
-            "maxSwapUsedPercent": g.max_swap_used_percent,
+            "swapUsedPercentWarn": g.swap_used_percent_warn,
+            "swapUsedPercentHard": g.swap_used_percent_hard,
             "minFreeSwapMb": g.min_free_swap_mb,
+            "activeSwapIoBlockThresholdPages": g.active_swap_io_block_threshold_pages,
             "minDiskFreeGb": g.min_disk_free_gb
         },
         "backupPolicy": {

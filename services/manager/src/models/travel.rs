@@ -152,6 +152,9 @@ pub struct TravelDecision {
     pub connection_source: Option<String>,
     pub connection_available: bool,
     pub connection_unavailable_reason: Option<String>,
+    /// Non-fatal resource warning (e.g. elevated swap) surfaced to the player at start time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -379,6 +382,7 @@ fn travel_decision(
         connection_source: None,
         connection_available: false,
         connection_unavailable_reason: Some("map not running".into()),
+        resource_warning: None,
     };
     refresh_user_message(&mut decision);
     decision
@@ -403,10 +407,15 @@ fn refresh_user_message(decision: &mut TravelDecision) {
         .or(decision.resolved_map.as_deref())
         .unwrap_or(decision.requested_map.as_str());
     decision.user_message = match decision.status.as_str() {
-        "starting" => format!(
-            "Starting {map_name}. This may take a few minutes.{}",
-            connection_sentence(decision)
-        ),
+        "starting" => {
+            let conn = connection_sentence(decision);
+            let warn = decision
+                .resource_warning
+                .as_deref()
+                .map(|w| format!(" Warning: {w}"))
+                .unwrap_or_default();
+            format!("Starting {map_name}. This may take a few minutes.{conn}{warn}")
+        }
         "already_online" => format!(
             "{map_name} is already running.{}",
             connection_sentence(decision)
@@ -577,6 +586,17 @@ pub async fn request_with_start(
         set_decision_status(&mut decision, false, "blocked", err.message());
         update_history(pool, &decision, "guard_blocked").await?;
         return Ok(decision);
+    }
+
+    // Guard passed — capture any non-blocking swap warning to surface to the player.
+    let guard_status = operations::travel_resource_guard_status(
+        config,
+        &sample,
+        active_travel_slots,
+        Some(&map.ark_map_name),
+    );
+    if guard_status.swap_warning {
+        decision.resource_warning = Some(guard_status.swap_warning_reason.clone());
     }
 
     if let Err(err) = write_runtime_slot_override(&snapshot.slot, &map) {

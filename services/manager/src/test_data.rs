@@ -22,6 +22,7 @@ pub fn resources() -> ResourceSample {
         load15: 2.2,
         manager_uptime_secs: 0,
         system_uptime_secs: None,
+        swap_io_pages: 0,
     }
 }
 

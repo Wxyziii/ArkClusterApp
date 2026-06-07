@@ -65,6 +65,7 @@ fn unavailable(started_at: Instant) -> ResourceSample {
         load15: 0.0,
         manager_uptime_secs: started_at.elapsed().as_secs(),
         system_uptime_secs: None,
+        swap_io_pages: 0,
     }
 }
 
@@ -76,9 +77,12 @@ async fn linux_sample(
     let mem = parse_meminfo(&fs::read_to_string("/proc/meminfo")?)?;
     let load = parse_loadavg(&fs::read_to_string("/proc/loadavg")?)?;
     let cpu_a = parse_cpu_counters(&fs::read_to_string("/proc/stat")?)?;
+    let swap_io_a = parse_swap_io_pages(fs::read_to_string("/proc/vmstat").ok().as_deref());
     tokio::time::sleep(Duration::from_millis(120)).await;
     let cpu_b = parse_cpu_counters(&fs::read_to_string("/proc/stat")?)?;
+    let swap_io_b = parse_swap_io_pages(fs::read_to_string("/proc/vmstat").ok().as_deref());
     let cpu_pct = cpu_usage_pct(cpu_a, cpu_b);
+    let swap_io_pages = swap_io_b.saturating_sub(swap_io_a);
     let disk = disk_usage(cluster_dir)
         .or_else(|| disk_usage("/"))
         .unwrap_or_default();
@@ -101,7 +105,28 @@ async fn linux_sample(
         load15: load.2,
         manager_uptime_secs: started_at.elapsed().as_secs(),
         system_uptime_secs,
+        swap_io_pages,
     })
+}
+
+/// Sum of pswpin + pswpout from /proc/vmstat content. Returns 0 on parse failure.
+fn parse_swap_io_pages(vmstat: Option<&str>) -> u64 {
+    let Some(text) = vmstat else { return 0 };
+    let mut pswpin: u64 = 0;
+    let mut pswpout: u64 = 0;
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        match parts.next() {
+            Some("pswpin") => {
+                pswpin = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            }
+            Some("pswpout") => {
+                pswpout = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            }
+            _ => {}
+        }
+    }
+    pswpin.saturating_add(pswpout)
 }
 
 fn gb_from_kb(kb: u64) -> f64 {

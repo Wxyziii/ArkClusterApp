@@ -125,6 +125,8 @@ pub struct ResourceSample {
     pub load15: f64,
     pub manager_uptime_secs: u64,
     pub system_uptime_secs: Option<u64>,
+    /// Pages swapped in+out over the sample window (from /proc/vmstat delta). 0 when unavailable.
+    pub swap_io_pages: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]

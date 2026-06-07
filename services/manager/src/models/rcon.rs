@@ -1554,6 +1554,7 @@ mod tests {
             connection_source: Some("slot_config".into()),
             connection_available: false,
             connection_unavailable_reason: Some("server starting: waiting for game ports to open".into()),
+            resource_warning: None,
         };
         assert_eq!(
             ark_feedback_for_decision(&decision),
