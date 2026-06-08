@@ -22,7 +22,7 @@ use crate::models::governor;
 use crate::models::operations::{self, ActionRequest, GuardError, ServerAction, SystemdGuardInput};
 use crate::models::resources;
 use crate::models::systemd::UnitStatus;
-use crate::models::{config_edit, maintenance, mods as mod_ops, runtime, travel as travel_model};
+use crate::models::{config_edit, maintenance, mods as mod_ops, nodes as nodes_model, runtime, travel as travel_model, travel_sessions};
 use crate::state::AppState;
 
 pub fn admin_router() -> Router<AppState> {
@@ -1433,6 +1433,37 @@ async fn maps_with_status(s: &AppState) -> Vec<ArkMap> {
         let mut map = map_from_config(cfg, max_players, &max_players_source);
         enrich_map_runtime(&mut map, s).await;
         maps.push(map);
+    }
+
+    // Overlay active external node travel sessions
+    let active_sessions = travel_sessions::list_active(&s.pool).await;
+    for session in &active_sessions {
+        let node = nodes_model::get(&s.pool, &session.node_id).await;
+        let connect_host = node.as_ref().map(|n| n.tailscale_ip.clone()).unwrap_or_default();
+        let node_name = node.as_ref().map(|n| n.display_name.clone()).unwrap_or_else(|| session.node_id.clone());
+        let game_port = session.game_port.unwrap_or(0) as u16;
+        let query_port = session.query_port.unwrap_or(0) as u16;
+        let is_ready = session.status == "ready";
+        let connection_available = is_ready && !connect_host.is_empty();
+        let conn_addr = if connection_available { format!("{}:{}", connect_host, game_port) } else { String::new() };
+        let query_addr = if connection_available { format!("{}:{}", connect_host, query_port) } else { String::new() };
+
+        if let Some(existing) = maps.iter_mut().find(|m| m.id == session.map_id) {
+            existing.state = if is_ready { "Online".into() } else { "Starting".into() };
+            existing.assignment = format!("External node ({})", node_name);
+            existing.rcon = if is_ready { "Connected".into() } else { "Connecting".into() };
+            existing.systemd = "external-node".into();
+            existing.connect_host = connect_host.clone();
+            existing.game_port = game_port;
+            existing.query_port = query_port;
+            existing.connection_address = conn_addr.clone();
+            existing.query_address = query_addr.clone();
+            existing.connection_source = "external-node".into();
+            existing.connection_available = connection_available;
+            existing.connection_unavailable_reason = if connection_available { String::new() } else { "node not yet ready".into() };
+            existing.next_action = format!("Running on external node {}", node_name);
+            existing.systemd_detail = None;
+        }
     }
 
     maps

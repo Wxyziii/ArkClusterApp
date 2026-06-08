@@ -56,6 +56,21 @@ pub async fn run_loop(cfg: Arc<NodeConfig>, server_state: SharedServerState) {
     }
 }
 
+fn detect_tailscale_ip() -> String {
+    // Tailscale IPs are always in 100.64.0.0/10 range
+    if let Ok(interfaces) = if_addrs::get_if_addrs() {
+        for iface in interfaces {
+            if let std::net::IpAddr::V4(ip) = iface.ip() {
+                let octets = ip.octets();
+                if octets[0] == 100 && octets[1] >= 64 && octets[1] <= 127 {
+                    return ip.to_string();
+                }
+            }
+        }
+    }
+    String::new()
+}
+
 fn build_payload(
     cfg: &NodeConfig,
     checks: &NodeChecks,
@@ -63,6 +78,7 @@ fn build_payload(
     current_map: Option<String>,
     rcon_ready: bool,
 ) -> serde_json::Value {
+    let tailscale_ip = detect_tailscale_ip();
     serde_json::json!({
         "nodeId": cfg.node_id,
         "nodeName": cfg.node_name,
@@ -71,7 +87,7 @@ fn build_payload(
         "online": true,
         "version": env!("CARGO_PKG_VERSION"),
         "tailscaleOnline": checks.tailscale_online,
-        "tailscaleIp": "",
+        "tailscaleIp": tailscale_ip,
         "maxTravelServers": 1,
         "activeTravelServers": active_travel_servers,
         "currentMap": current_map,
