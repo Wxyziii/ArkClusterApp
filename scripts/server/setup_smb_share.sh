@@ -63,6 +63,14 @@ else
     ok "System user $SMB_USER already exists"
 fi
 
+# Add SMB user to ark group so it can write to ark-owned cluster dir
+if getent group ark &>/dev/null; then
+    usermod -aG ark "$SMB_USER"
+    ok "$SMB_USER added to ark group"
+else
+    warn "ark group not found — SMB writes may fail if cluster dir is owned by ark:ark"
+fi
+
 # Set SMB password (prompted)
 echo ""
 echo "    Set Samba password for user '$SMB_USER'."
@@ -73,7 +81,6 @@ smbpasswd -a "$SMB_USER" || die "Failed to set Samba password"
 ok "Samba password set for $SMB_USER"
 
 # Grant read/write to cluster dir
-setfacl -m "u:${SMB_USER}:rwx" "$CLUSTER_DIR" 2>/dev/null || chmod g+rwx "$CLUSTER_DIR" || true
 chown -R ark:ark "$CLUSTER_DIR" 2>/dev/null || true
 chmod 2775 "$CLUSTER_DIR"
 
