@@ -466,6 +466,10 @@ pub async fn try_external_travel(
     let node_ip = if node.tailscale_ip.is_empty() { "pending".to_string() } else { node.tailscale_ip.clone() };
     let connect_addr = format!("{}:{}", node_ip, ports.0);
     let query_addr = format!("{}:{}", node_ip, ports.2);
+    let relay_ip = &s.config.server.relay_public_ip;
+    let pub_connect = if !relay_ip.is_empty() { format!("{}:{}", relay_ip, ports.0) } else { connect_addr.clone() };
+    let pub_query = if !relay_ip.is_empty() { format!("{}:{}", relay_ip, ports.2) } else { query_addr.clone() };
+    let display_addr = pub_connect.clone();
 
     Some(
         Json(json!({
@@ -480,10 +484,12 @@ pub async fn try_external_travel(
             "taskId": task_id,
             "connectionAddress": connect_addr,
             "queryAddress": query_addr,
+            "publicConnectionAddress": pub_connect,
+            "publicQueryAddress": pub_query,
             "connectionAvailable": !node_ip.is_empty() && node_ip != "pending",
             "userMessage": format!(
                 "{} is starting on {}. Use terminal 'Join Another Server' once it's ready. Connect: {}",
-                profile.name, node.display_name, connect_addr
+                profile.name, node.display_name, display_addr
             )
         }))
         .into_response(),
