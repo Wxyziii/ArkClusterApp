@@ -42,6 +42,8 @@ pub struct NodeConfig {
     pub log_dir: String,
     #[serde(rename = "backupDir")]
     pub backup_dir: String,
+    #[serde(rename = "additionalArgs", default)]
+    pub additional_args: String,
     #[serde(rename = "heartbeatIntervalSecs", default = "default_heartbeat")]
     pub heartbeat_interval_secs: u64,
     #[serde(rename = "taskPollIntervalSecs", default = "default_task_poll")]

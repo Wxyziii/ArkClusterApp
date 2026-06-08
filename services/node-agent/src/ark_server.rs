@@ -76,6 +76,7 @@ pub async fn start(
         &map_arg,
         &cluster_id,
         cluster_dir,
+        &cfg.additional_args,
     ).await?;
 
     {
@@ -165,15 +166,17 @@ async fn spawn_ark_server(
     map_arg: &str,
     cluster_id: &str,
     cluster_dir: &str,
+    additional_args: &str,
 ) -> Result<u32> {
     #[cfg(windows)]
     {
         let exe_str = exe.to_string_lossy();
         // Strip trailing backslash — cmd.exe \"...\" with trailing \ escapes the closing quote
         let cluster_dir_clean = cluster_dir.trim_end_matches('\\').trim_end_matches('/');
+        let extra = if additional_args.is_empty() { String::new() } else { format!(" {}", additional_args) };
         let bat = format!(
-            "@echo off\r\nstart \"ARK Travel\" \"{}\" \"{}\" -clusterid={} -ClusterDirOverride=\"{}\" -NoBattlEye -server -log -servergamelog\r\n",
-            exe_str, map_arg, cluster_id, cluster_dir_clean
+            "@echo off\r\nstart \"ARK Travel\" \"{}\" \"{}\" -clusterid={} -ClusterDirOverride=\"{}\" -NoBattlEye -server -log -servergamelog{}\r\n",
+            exe_str, map_arg, cluster_id, cluster_dir_clean, extra
         );
         std::fs::write(LAUNCH_BAT, bat)?;
 
