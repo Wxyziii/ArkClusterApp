@@ -119,14 +119,6 @@ pub async fn stop(cfg: &NodeConfig, save_first: bool, state: SharedServerState) 
         kill_pid(pid).await;
     }
 
-    // Also clean up schtask
-    #[cfg(windows)]
-    {
-        let _ = tokio::process::Command::new("schtasks")
-            .args(["/delete", "/tn", SCHTASK_NAME, "/f"])
-            .output().await;
-    }
-
     {
         let mut s = state.write().await;
         s.running = false;
@@ -149,8 +141,6 @@ pub async fn check_rcon_ready(cfg: &NodeConfig) -> bool {
 
 // ── internals ─────────────────────────────────────────────────────────────────
 
-#[cfg(windows)]
-const SCHTASK_NAME: &str = "ArkTravelNodeServer";
 const LAUNCH_BAT: &str = r"C:\ProgramData\ArkClusterNode\launch_ark.bat";
 
 /// On Windows: write a .bat and launch via schtasks /ru INTERACTIVE so the
@@ -173,30 +163,13 @@ async fn spawn_ark_server(
         );
         std::fs::write(LAUNCH_BAT, bat)?;
 
-        // Remove old schtask
-        let _ = tokio::process::Command::new("schtasks")
-            .args(["/delete", "/tn", SCHTASK_NAME, "/f"])
-            .output().await;
-
-        // Create task: run ONCE as INTERACTIVE (logged-in user), trigger at midnight (irrelevant)
-        let out = tokio::process::Command::new("schtasks")
-            .args(["/create", "/tn", SCHTASK_NAME,
-                   "/sc", "ONCE", "/st", "00:00",
-                   "/ru", "INTERACTIVE",
-                   "/tr", LAUNCH_BAT, "/f"])
+        // Run bat directly — `start` inside the bat detaches ShooterGameServer
+        let out = tokio::process::Command::new("cmd")
+            .args(["/c", LAUNCH_BAT])
             .output().await?;
         if !out.status.success() {
-            let msg = String::from_utf8_lossy(&out.stdout);
-            bail!("schtasks create failed: {}", msg.trim());
-        }
-
-        // Run task now
-        let out = tokio::process::Command::new("schtasks")
-            .args(["/run", "/tn", SCHTASK_NAME])
-            .output().await?;
-        if !out.status.success() {
-            let msg = String::from_utf8_lossy(&out.stdout);
-            bail!("schtasks run failed: {}", msg.trim());
+            let msg = String::from_utf8_lossy(&out.stderr);
+            bail!("launch bat failed: {}", msg.trim());
         }
 
         // Wait for process to appear (batch spawns child process)
