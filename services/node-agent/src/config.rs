@@ -16,6 +16,8 @@ pub struct NodeConfig {
     pub node_token: String,
     #[serde(rename = "clusterSharePath")]
     pub cluster_share_path: String,
+    #[serde(rename = "clusterId", default)]
+    pub cluster_id: String,
     #[serde(rename = "smbUncPath", default)]
     pub smb_unc_path: String,
     #[serde(rename = "smbUser", default)]

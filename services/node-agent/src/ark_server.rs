@@ -63,9 +63,13 @@ pub async fn start(
         mods_arg = if mod_list.is_empty() { String::new() } else { format!("?GameModIds={}", mod_list) }
     );
 
-    let cluster_id = extract_cluster_id_from_share(cluster_dir);
+    let cluster_id = if cfg.cluster_id.is_empty() {
+        extract_cluster_id_from_share(cluster_dir)
+    } else {
+        cfg.cluster_id.clone()
+    };
 
-    tracing::info!("Starting ARK: {} map={}", ark_map_name, map_id);
+    tracing::info!("Starting ARK: {} map={} cluster_id={}", ark_map_name, map_id, cluster_id);
 
     let pid = spawn_ark_server(
         &exe,
