@@ -165,11 +165,11 @@ async fn spawn_ark_server(
     #[cfg(windows)]
     {
         let exe_str = exe.to_string_lossy();
-        // Build batch file: start "" "exe" arg1 arg2 ...
-        // Using start "" to detach, no /B so window is visible
+        // Strip trailing backslash — cmd.exe \"...\" with trailing \ escapes the closing quote
+        let cluster_dir_clean = cluster_dir.trim_end_matches('\\').trim_end_matches('/');
         let bat = format!(
-            "@echo off\r\nstart \"ARK Travel\" \"{}\" \"{}\" -clusterid={} \"-ClusterDirOverride={}\" -NoBattlEye -server -log -servergamelog\r\n",
-            exe_str, map_arg, cluster_id, cluster_dir
+            "@echo off\r\nstart \"ARK Travel\" \"{}\" \"{}\" -clusterid={} -ClusterDirOverride=\"{}\" -NoBattlEye -server -log -servergamelog\r\n",
+            exe_str, map_arg, cluster_id, cluster_dir_clean
         );
         std::fs::write(LAUNCH_BAT, bat)?;
 
