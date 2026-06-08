@@ -1,7 +1,6 @@
 //! ARK dedicated server process lifecycle.
 use anyhow::{bail, Result};
 use std::sync::Arc;
-use tokio::process::Command;
 use tokio::sync::RwLock;
 
 use crate::config::NodeConfig;
@@ -48,11 +47,7 @@ pub async fn start(
     }
 
     let cluster_dir = cluster_share_override.unwrap_or(&cfg.cluster_share_path);
-    if !std::path::Path::new(cluster_dir).exists() {
-        bail!("cluster share not mounted: {}", cluster_dir);
-    }
 
-    // Build mod list string
     let mod_list = cfg.mod_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
 
     let map_arg = format!(
@@ -60,11 +55,11 @@ pub async fn start(
          ?RCONEnabled=True?RCONPort={rcon}?ServerAdminPassword={pwd}\
          ?AltSaveDirectoryName=external-{node}?listen\
          {mods_arg}",
-        game = cfg.game_port,
+        game  = cfg.game_port,
         query = cfg.query_port,
-        rcon = cfg.rcon_port,
-        pwd = cfg.server_admin_password,
-        node = cfg.node_id,
+        rcon  = cfg.rcon_port,
+        pwd   = cfg.server_admin_password,
+        node  = cfg.node_id,
         mods_arg = if mod_list.is_empty() { String::new() } else { format!("?GameModIds={}", mod_list) }
     );
 
@@ -72,33 +67,34 @@ pub async fn start(
 
     tracing::info!("Starting ARK: {} map={}", ark_map_name, map_id);
 
-    let mut child = Command::new(&exe)
-        .arg(&map_arg)
-        .arg(format!("-clusterid={}", cluster_id))
-        .arg(format!("-ClusterDirOverride={}", cluster_dir))
-        .arg("-NoBattlEye")
-        .arg("-server")
-        .arg("-log")
-        .arg("-servergamelog")
-        .spawn()?;
-
-    let pid = child.id();
+    let pid = spawn_ark_server(
+        &exe,
+        &map_arg,
+        &cluster_id,
+        cluster_dir,
+    ).await?;
 
     {
         let mut s = state.write().await;
         s.running = true;
         s.map_id = map_id.to_string();
         s.session_id = session_id.to_string();
-        s.pid = pid;
+        s.pid = Some(pid);
     }
 
+    // Monitor: poll until PID disappears
     let state_clone = state.clone();
     tokio::spawn(async move {
-        let _ = child.wait().await;
-        let mut s = state_clone.write().await;
-        s.running = false;
-        s.pid = None;
-        tracing::info!("ARK server process exited");
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            if !pid_alive(pid).await {
+                let mut s = state_clone.write().await;
+                s.running = false;
+                s.pid = None;
+                tracing::info!("ARK server process (pid={}) exited", pid);
+                break;
+            }
+        }
     });
 
     Ok(())
@@ -116,22 +112,19 @@ pub async fn stop(cfg: &NodeConfig, save_first: bool, state: SharedServerState) 
             Ok(_) => tracing::info!("World saved via RCON"),
             Err(e) => tracing::warn!("SaveWorld failed (continuing stop): {}", e),
         }
-        // Give the server a moment to flush save
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 
     if let Some(pid) = pid {
-        #[cfg(target_os = "windows")]
-        {
-            let _ = Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F"])
-                .output()
-                .await;
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = Command::new("kill").arg(pid.to_string()).output().await;
-        }
+        kill_pid(pid).await;
+    }
+
+    // Also clean up schtask
+    #[cfg(windows)]
+    {
+        let _ = tokio::process::Command::new("schtasks")
+            .args(["/delete", "/tn", SCHTASK_NAME, "/f"])
+            .output().await;
     }
 
     {
@@ -154,9 +147,136 @@ pub async fn check_rcon_ready(cfg: &NodeConfig) -> bool {
         .is_ok()
 }
 
+// ── internals ─────────────────────────────────────────────────────────────────
+
+#[cfg(windows)]
+const SCHTASK_NAME: &str = "ArkTravelNodeServer";
+const LAUNCH_BAT: &str = r"C:\ProgramData\ArkClusterNode\launch_ark.bat";
+
+/// On Windows: write a .bat and launch via schtasks /ru INTERACTIVE so the
+/// process spawns in the user's desktop session (needed for UE4 GPU init).
+/// On other platforms: spawn directly.
+async fn spawn_ark_server(
+    exe: &std::path::Path,
+    map_arg: &str,
+    cluster_id: &str,
+    cluster_dir: &str,
+) -> Result<u32> {
+    #[cfg(windows)]
+    {
+        let exe_str = exe.to_string_lossy();
+        // Build batch file: start "" "exe" arg1 arg2 ...
+        // Using start "" to detach, no /B so window is visible
+        let bat = format!(
+            "@echo off\r\nstart \"ARK Travel\" \"{}\" \"{}\" -clusterid={} \"-ClusterDirOverride={}\" -NoBattlEye -server -log -servergamelog\r\n",
+            exe_str, map_arg, cluster_id, cluster_dir
+        );
+        std::fs::write(LAUNCH_BAT, bat)?;
+
+        // Remove old schtask
+        let _ = tokio::process::Command::new("schtasks")
+            .args(["/delete", "/tn", SCHTASK_NAME, "/f"])
+            .output().await;
+
+        // Create task: run ONCE as INTERACTIVE (logged-in user), trigger at midnight (irrelevant)
+        let out = tokio::process::Command::new("schtasks")
+            .args(["/create", "/tn", SCHTASK_NAME,
+                   "/sc", "ONCE", "/st", "00:00",
+                   "/ru", "INTERACTIVE",
+                   "/tr", LAUNCH_BAT, "/f"])
+            .output().await?;
+        if !out.status.success() {
+            let msg = String::from_utf8_lossy(&out.stdout);
+            bail!("schtasks create failed: {}", msg.trim());
+        }
+
+        // Run task now
+        let out = tokio::process::Command::new("schtasks")
+            .args(["/run", "/tn", SCHTASK_NAME])
+            .output().await?;
+        if !out.status.success() {
+            let msg = String::from_utf8_lossy(&out.stdout);
+            bail!("schtasks run failed: {}", msg.trim());
+        }
+
+        // Wait for process to appear (batch spawns child process)
+        for _ in 0..12 {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            if let Some(pid) = find_process_pid("ShooterGameServer.exe").await {
+                tracing::info!("ARK server launched via schtask, pid={}", pid);
+                return Ok(pid);
+            }
+        }
+        bail!("ShooterGameServer.exe did not appear within 36s after schtask launch");
+    }
+
+    #[cfg(not(windows))]
+    {
+        let child = tokio::process::Command::new(exe)
+            .arg(map_arg)
+            .arg(format!("-clusterid={}", cluster_id))
+            .arg(format!("-ClusterDirOverride={}", cluster_dir))
+            .arg("-NoBattlEye")
+            .arg("-server")
+            .arg("-log")
+            .spawn()?;
+        child.id().ok_or_else(|| anyhow::anyhow!("failed to get child PID"))
+    }
+}
+
+async fn find_process_pid(image: &str) -> Option<u32> {
+    let out = tokio::process::Command::new("tasklist")
+        .args(["/fi", &format!("imagename eq {}", image), "/fo", "csv", "/nh"])
+        .output().await.ok()?;
+    let s = String::from_utf8_lossy(&out.stdout);
+    for line in s.lines() {
+        if line.to_lowercase().contains(&image.to_lowercase()) {
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() >= 2 {
+                return parts[1].trim().trim_matches('"').parse().ok();
+            }
+        }
+    }
+    None
+}
+
+async fn pid_alive(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        let out = tokio::process::Command::new("tasklist")
+            .args(["/fi", &format!("pid eq {}", pid), "/fo", "csv", "/nh"])
+            .output().await;
+        match out {
+            Ok(o) => String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()),
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        tokio::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output().await
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+}
+
+async fn kill_pid(pid: u32) {
+    #[cfg(windows)]
+    {
+        let _ = tokio::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .output().await;
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = tokio::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .output().await;
+    }
+}
+
 fn extract_cluster_id_from_share(share_path: &str) -> String {
-    // e.g. "Z:\ark-cluster-main" → "ark-prime-7f3a" from config ideally
-    // Fall back to a hash of the path
     let mut h = sha2::Sha256::new();
     use sha2::Digest;
     h.update(share_path.as_bytes());
