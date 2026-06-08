@@ -24,8 +24,8 @@ use crate::state::AppState;
 pub fn admin_node_router() -> Router<AppState> {
     Router::new()
         .route("/nodes", get(list_nodes))
-        .route("/nodes/:id", get(node_detail))
-        .route("/nodes/:id/revoke", post(revoke_node))
+        .route("/nodes/{id}", get(node_detail))
+        .route("/nodes/{id}/revoke", post(revoke_node))
         .route("/nodes/pair/start", post(pair_start))
         .route("/travel/status", get(travel_status))
         .route("/travel/close", post(travel_close))
@@ -36,8 +36,8 @@ pub fn admin_node_router() -> Router<AppState> {
 pub fn node_router() -> Router<AppState> {
     Router::new()
         .route("/nodes/heartbeat", post(node_heartbeat))
-        .route("/nodes/:id/tasks/poll", post(task_poll))
-        .route("/nodes/:id/tasks/:task_id/result", post(task_result))
+        .route("/nodes/{id}/tasks/poll", post(task_poll))
+        .route("/nodes/{id}/tasks/{task_id}/result", post(task_result))
 }
 
 pub fn open_node_router() -> Router<AppState> {
