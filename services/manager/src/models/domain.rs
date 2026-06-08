@@ -75,6 +75,12 @@ pub struct ArkMap {
     pub connection_source: String,
     pub connection_available: bool,
     pub connection_unavailable_reason: String,
+    /// Public relay connection address (e.g. "64.226.66.129:7777"). None when relay not configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_connection_address: Option<String>,
+    /// Public relay query address (e.g. "64.226.66.129:27015"). None when relay not configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_query_address: Option<String>,
     pub config: MapConfigSummary,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub systemd_detail: Option<UnitStatus>,

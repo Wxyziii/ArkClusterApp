@@ -1437,6 +1437,7 @@ async fn maps_with_status(s: &AppState) -> Vec<ArkMap> {
 
     // Overlay active external node travel sessions
     let active_sessions = travel_sessions::list_active(&s.pool).await;
+    let relay_ip = s.config.server.relay_public_ip.clone();
     for session in &active_sessions {
         let node = nodes_model::get(&s.pool, &session.node_id).await;
         let connect_host = node.as_ref().map(|n| n.tailscale_ip.clone()).unwrap_or_default();
@@ -1447,6 +1448,16 @@ async fn maps_with_status(s: &AppState) -> Vec<ArkMap> {
         let connection_available = is_ready && !connect_host.is_empty();
         let conn_addr = if connection_available { format!("{}:{}", connect_host, game_port) } else { String::new() };
         let query_addr = if connection_available { format!("{}:{}", connect_host, query_port) } else { String::new() };
+        let pub_conn = if connection_available && !relay_ip.is_empty() {
+            Some(format!("{}:{}", relay_ip, game_port))
+        } else {
+            None
+        };
+        let pub_query = if connection_available && !relay_ip.is_empty() {
+            Some(format!("{}:{}", relay_ip, query_port))
+        } else {
+            None
+        };
 
         if let Some(existing) = maps.iter_mut().find(|m| m.id == session.map_id) {
             existing.state = if is_ready { "Online".into() } else { "Starting".into() };
@@ -1463,6 +1474,8 @@ async fn maps_with_status(s: &AppState) -> Vec<ArkMap> {
             existing.connection_unavailable_reason = if connection_available { String::new() } else { "node not yet ready".into() };
             existing.next_action = format!("Running on external node {}", node_name);
             existing.systemd_detail = None;
+            existing.public_connection_address = pub_conn;
+            existing.public_query_address = pub_query;
         }
     }
 
@@ -1595,6 +1608,8 @@ fn map_from_config(cfg: &MapConfig, max_players: u32, max_players_source: &str) 
         connection_source: "unavailable".into(),
         connection_available: false,
         connection_unavailable_reason: "map not running".into(),
+        public_connection_address: None,
+        public_query_address: None,
         config: MapConfigSummary {
             systemd_unit: cfg.systemd_unit.clone(),
             ark_map_name: cfg.ark_map_name.clone(),
@@ -1658,6 +1673,8 @@ fn map_from_official(
         connection_source: "unavailable".into(),
         connection_available: false,
         connection_unavailable_reason: "map not running".into(),
+        public_connection_address: None,
+        public_query_address: None,
         config: MapConfigSummary {
             systemd_unit: "".into(),
             ark_map_name: official.ark_map_name.into(),
@@ -1857,6 +1874,11 @@ fn apply_connection_to_map(map: &mut ArkMap, config: &crate::config::Config, slo
     map.connection_address = format!("{}:{}", map.connect_host, slot.game_port);
     map.query_address = format!("{}:{}", map.connect_host, slot.query_port);
     map.connection_unavailable_reason.clear();
+    let relay_ip = &config.server.relay_public_ip;
+    if !relay_ip.is_empty() {
+        map.public_connection_address = Some(format!("{}:{}", relay_ip, slot.game_port));
+        map.public_query_address = Some(format!("{}:{}", relay_ip, slot.query_port));
+    }
 }
 
 fn map_state_from_systemd(map: &ArkMap, status: &UnitStatus) -> String {

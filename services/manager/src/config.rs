@@ -56,6 +56,16 @@ pub struct ServerConfig {
     pub api_token: String,
     #[serde(default)]
     pub player_connect_host: String,
+    /// Public relay VPS IP. When set, API responses include publicConnectionAddress/publicQueryAddress.
+    #[serde(default)]
+    pub relay_public_ip: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct RelayPortMapping {
+    pub map_id: String,
+    pub public_game_port: u16,
+    pub public_query_port: u16,
 }
 
 #[derive(Debug, Clone, Deserialize)]
