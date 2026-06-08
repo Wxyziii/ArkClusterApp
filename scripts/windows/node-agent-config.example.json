@@ -4,7 +4,7 @@
   "ownerDiscordUserId": "YOUR_DISCORD_USER_ID",
   "managerUrl": "http://100.68.7.42:8788",
   "nodeToken": "FILLED_BY_SETUP_SCRIPT",
-  "clusterSharePath": "Z:\\ark-cluster-main",
+  "clusterSharePath": "Z:\\",
   "arkDedicatedDir": "D:\\ARK-Dedicated",
   "modIds": [
     731604991,

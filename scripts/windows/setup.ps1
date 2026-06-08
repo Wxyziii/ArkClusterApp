@@ -13,7 +13,7 @@ param(
     [string]$NodeId,
     [string]$ArkDir = "",
     [string]$DataDir = "C:\ProgramData\ArkClusterNode",
-    [string]$ClusterSharePath = "Z:\ark-cluster-main",
+    [string]$ClusterSharePath = "Z:\",
     [string]$UbuntuTailscaleIp = "100.68.7.42",
     [string]$ShareName = "ark-cluster-main",
     [int]$GamePort = 7789,
