@@ -24,13 +24,16 @@ pub async fn run_loop(cfg: Arc<NodeConfig>, server_state: SharedServerState) {
         drop(srv);
 
         let node_checks = checks::run_checks(&cfg).await;
-        let rcon_ready = if active == 1 {
+        // Also detect ShooterGameServer.exe directly — handles agent-restart-while-running case
+        let shooter_running = crate::ark_server::detect_shooter_process().await;
+        let effective_active = if active == 1 || shooter_running { 1u64 } else { 0 };
+        let rcon_ready = if effective_active == 1 {
             crate::ark_server::check_rcon_ready(&cfg).await
         } else {
             false
         };
 
-        let payload = build_payload(&cfg, &node_checks, active, current_map, rcon_ready);
+        let payload = build_payload(&cfg, &node_checks, effective_active, current_map, rcon_ready);
 
         let url = format!("{}/api/nodes/heartbeat", cfg.manager_url.trim_end_matches('/'));
         match client

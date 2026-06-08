@@ -185,6 +185,15 @@ async fn node_heartbeat(
         tracing::warn!("heartbeat DB error for {}: {}", claims.node_id, e);
         return api_err(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string());
     }
+    // If node reports RCON ready, promote any "starting" session to "ready"
+    if hb.rcon_ready == Some(true) {
+        if let Some(session) = travel_sessions::active_for_node(&s.pool, &claims.node_id).await {
+            if session.status == "starting" {
+                let _ = travel_sessions::set_status(&s.pool, &session.id, "ready").await;
+                tracing::info!("session {} marked ready via heartbeat rcon_ready", session.id);
+            }
+        }
+    }
     Json(json!({ "accepted": true, "nodeId": claims.node_id })).into_response()
 }
 

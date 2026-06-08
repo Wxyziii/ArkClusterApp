@@ -139,6 +139,16 @@ pub async fn check_rcon_ready(cfg: &NodeConfig) -> bool {
         .is_ok()
 }
 
+/// Returns true if ShooterGameServer.exe is running, regardless of server_state.
+pub async fn detect_shooter_process() -> bool {
+    find_process_pid("ShooterGameServer.exe").await.is_some()
+}
+
+/// Returns PID of running ShooterGameServer.exe, or None.
+pub async fn find_shooter_pid() -> Option<u32> {
+    find_process_pid("ShooterGameServer.exe").await
+}
+
 // ── internals ─────────────────────────────────────────────────────────────────
 
 const LAUNCH_BAT: &str = r"C:\ProgramData\ArkClusterNode\launch_ark.bat";

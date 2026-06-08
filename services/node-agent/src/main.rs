@@ -71,6 +71,14 @@ async fn run_agent(cfg: Arc<config::NodeConfig>, mut shutdown: watch::Receiver<b
 
     let server_state = ark_server::new_shared_state();
 
+    // Recover state if ShooterGameServer.exe already running (e.g. agent restarted mid-travel)
+    if let Some(pid) = ark_server::find_shooter_pid().await {
+        tracing::info!("Detected running ShooterGameServer.exe (pid={}), recovering state", pid);
+        let mut s = server_state.write().await;
+        s.running = true;
+        s.pid = Some(pid);
+    }
+
     {
         let cfg = cfg.clone();
         let state = server_state.clone();
