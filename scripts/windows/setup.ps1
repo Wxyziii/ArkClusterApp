@@ -153,9 +153,9 @@ Write-OK "Directories created under $DataDir"
 Write-Step "Mounting cluster share $ClusterSharePath"
 $shareLetter = ($ClusterSharePath -split '\\')[0].TrimEnd(':')
 $shareUncPath = "\\$UbuntuTailscaleIp\$ShareName"
-$existing = Get-PSDrive -Name $shareLetter -ErrorAction SilentlyContinue
-if ($existing -and (Test-Path $ClusterSharePath)) {
-    Write-OK "Share already mounted at $ClusterSharePath"
+$existing = & net use 2>&1 | Select-String "${shareLetter}:"
+if ($existing) {
+    Write-OK "Share already mounted at ${shareLetter}:"
 } else {
     Write-Host "    Mounting $shareUncPath -> ${shareLetter}:"
     Write-Host ""
@@ -166,10 +166,7 @@ if ($existing -and (Test-Path $ClusterSharePath)) {
     if ($LASTEXITCODE -ne 0) {
         Write-Fail "Failed to mount share: $netResult`nEnsure Ubuntu has SMB set up (run setup_smb_share.sh on Ubuntu)."
     }
-    if (-not (Test-Path $ClusterSharePath)) {
-        Write-Fail "Cluster share mounted but path $ClusterSharePath not accessible."
-    }
-    Write-OK "Cluster share mounted at $ClusterSharePath"
+    Write-OK "Cluster share mounted at ${shareLetter}:"
 }
 
 # ── Step 7: Verify share is writable ─────────────────────────────────────────
