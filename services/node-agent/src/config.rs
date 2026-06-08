@@ -16,6 +16,12 @@ pub struct NodeConfig {
     pub node_token: String,
     #[serde(rename = "clusterSharePath")]
     pub cluster_share_path: String,
+    #[serde(rename = "smbUncPath", default)]
+    pub smb_unc_path: String,
+    #[serde(rename = "smbUser", default)]
+    pub smb_user: String,
+    #[serde(rename = "smbPassword", default)]
+    pub smb_password: String,
     #[serde(rename = "arkDedicatedDir")]
     pub ark_dedicated_dir: String,
     #[serde(rename = "modIds")]
