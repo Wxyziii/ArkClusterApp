@@ -24,6 +24,9 @@ thiserror = "2"
 anyhow = "1"
 async-trait = "0.1"
 libc = "0.2"
+sha2 = "0.10"
+rand = "0.8"
+hex = "0.4"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }

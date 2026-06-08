@@ -25,7 +25,7 @@ use crate::models::systemd::UnitStatus;
 use crate::models::{config_edit, maintenance, mods as mod_ops, runtime, travel as travel_model};
 use crate::state::AppState;
 
-pub fn router() -> Router<AppState> {
+pub fn admin_router() -> Router<AppState> {
     Router::new()
         .route("/status", get(status))
         .route("/capabilities", get(capabilities))
@@ -386,6 +386,9 @@ async fn travel_request(
     State(s): State<AppState>,
     Json(req): Json<travel_model::TravelRequestBody>,
 ) -> impl IntoResponse {
+    let actor = req.actor.clone();
+    let discord_id = req.actor_discord_id.clone().unwrap_or_default();
+    let map_input = req.map.clone();
     let statuses = slot_statuses(&s).await;
     match travel_model::request_with_start(
         &s.pool,
@@ -410,15 +413,23 @@ async fn travel_request(
             .await;
             Json(decision).into_response()
         }
-        Ok(decision) => {
+        // Local travel unavailable — try external node
+        Ok(_decision) => {
+            if let Some(resp) = crate::api_nodes::try_external_travel(&s, &map_input, &actor, &discord_id).await {
+                return resp;
+            }
             audit::record(
                 &s.pool,
-                &AuditEvent::new(Severity::Warn, "Travel", "travel request blocked")
-                    .target(decision.resolved_map.as_deref().unwrap_or(""))
-                    .detail(format!("id={} reason={}", decision.id, decision.reason)),
+                &AuditEvent::new(Severity::Warn, "Travel", "travel request blocked (no node available)")
+                    .detail(format!("map={}", map_input)),
             )
             .await;
-            (StatusCode::CONFLICT, Json(decision)).into_response()
+            (StatusCode::CONFLICT, Json(serde_json::json!({
+                "accepted": false,
+                "status": "blocked",
+                "reason": "No local slot available and no external node is online/free for this map.",
+                "requestedMap": map_input
+            }))).into_response()
         }
         Err(err) => api_error(
             StatusCode::INTERNAL_SERVER_ERROR,

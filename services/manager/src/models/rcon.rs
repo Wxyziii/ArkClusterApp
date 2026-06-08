@@ -997,6 +997,7 @@ async fn process_detected_command(state: &AppState, message: ChatMessage) {
         } else {
             message.player.clone()
         },
+        actor_discord_id: None,
     };
     let statuses = travel_slot_statuses(state).await;
     match travel::request_with_start(

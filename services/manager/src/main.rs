@@ -9,6 +9,7 @@
 #![allow(dead_code)]
 
 mod api;
+mod api_nodes;
 mod auth;
 mod config;
 mod db;
@@ -20,6 +21,7 @@ mod test_data;
 use axum::http::{header, Method};
 use axum::routing::get;
 use axum::{middleware, Json, Router};
+use tokio::time::{interval, Duration};
 use serde_json::json;
 use std::path::Path;
 use tower_http::cors::{Any, CorsLayer};
@@ -99,14 +101,46 @@ async fn run() -> Result<(), i32> {
 
     // --- routing ---
     let cors = CorsLayer::new()
-        .allow_methods([Method::GET, Method::OPTIONS])
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
         .allow_origin(Any);
 
-    let api = api::router().route_layer(middleware::from_fn_with_state(
+    // Admin routes: require main API token
+    let admin_api = api::admin_router()
+        .merge(api_nodes::admin_node_router())
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_token,
+        ));
+
+    // Node routes: require per-node token
+    let node_api = api_nodes::node_router().route_layer(middleware::from_fn_with_state(
         state.clone(),
-        auth::require_token,
+        auth::require_node_token,
     ));
+
+    // Open routes: no auth (pairing code validated internally)
+    let open_api = api_nodes::open_node_router();
+
+    let api = Router::new()
+        .merge(admin_api)
+        .merge(node_api)
+        .merge(open_api);
+
+    // Background: mark nodes offline when heartbeat stales
+    {
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            let mut tick = interval(Duration::from_secs(30));
+            loop {
+                tick.tick().await;
+                let n = crate::models::nodes::mark_offline_stale(&pool, 90).await.unwrap_or(0);
+                if n > 0 {
+                    tracing::info!("offline detection: marked {n} stale node(s) offline");
+                }
+            }
+        });
+    }
 
     let web_root = web_root();
     let static_files =

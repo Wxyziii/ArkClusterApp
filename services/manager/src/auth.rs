@@ -1,9 +1,10 @@
-//! Bearer-token auth middleware for `/api/*`.
+//! Auth middleware for `/api/*`.
 //!
-//! `/health` is mounted outside this layer and needs no token. Every `/api/*`
-//! request must send `Authorization: Bearer <token>` matching the configured
-//! API token. The token is NEVER logged — failures log only the reason and the
-//! peer-agnostic fact that auth failed.
+//! - `require_token`: admin Bearer token, matches config.
+//! - `require_node_token`: node-specific Bearer token, validated against DB.
+//!   Inserts `NodeClaims` extension with the authenticated node_id.
+//!
+//! Tokens are NEVER logged — failures log only the category of rejection.
 
 use axum::body::Body;
 use axum::extract::State;
@@ -13,10 +14,16 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
 
+use crate::models::nodes;
 use crate::state::AppState;
 
+/// Extension injected by `require_node_token`.
+#[derive(Clone)]
+pub struct NodeClaims {
+    pub node_id: String,
+}
+
 fn unauthorized(reason: &str) -> Response {
-    // Reason is a static category, never the token or header contents.
     tracing::warn!("api auth rejected: {reason}");
     (
         StatusCode::UNAUTHORIZED,
@@ -31,25 +38,9 @@ pub async fn require_token(
     next: Next,
 ) -> Response {
     let expected = state.config.server.api_token.as_str();
-
-    let header = match req.headers().get(AUTHORIZATION) {
-        Some(h) => h,
-        None => return unauthorized("missing Authorization header"),
+    let Some(token) = extract_bearer(req.headers()) else {
+        return unauthorized("missing or malformed Authorization header");
     };
-
-    let value = match header.to_str() {
-        Ok(v) => v,
-        Err(_) => return unauthorized("malformed Authorization header"),
-    };
-
-    let token = match value
-        .strip_prefix("Bearer ")
-        .or_else(|| value.strip_prefix("bearer "))
-    {
-        Some(t) => t.trim(),
-        None => return unauthorized("expected 'Bearer <token>' scheme"),
-    };
-
     if constant_time_eq(token.as_bytes(), expected.as_bytes()) {
         next.run(req).await
     } else {
@@ -57,7 +48,29 @@ pub async fn require_token(
     }
 }
 
-/// Length-independent constant-time comparison to avoid timing leaks.
+pub async fn require_node_token(
+    State(state): State<AppState>,
+    mut req: Request<Body>,
+    next: Next,
+) -> Response {
+    let Some(token) = extract_bearer(req.headers()) else {
+        return unauthorized("missing or malformed Authorization header");
+    };
+    let Some(node_id) = nodes::validate_token(&state.pool, token).await else {
+        return unauthorized("invalid or revoked node token");
+    };
+    req.extensions_mut().insert(NodeClaims { node_id });
+    next.run(req).await
+}
+
+fn extract_bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
+    let header = headers.get(AUTHORIZATION)?.to_str().ok()?;
+    header
+        .strip_prefix("Bearer ")
+        .or_else(|| header.strip_prefix("bearer "))
+        .map(|t| t.trim())
+}
+
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;

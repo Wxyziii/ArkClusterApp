@@ -126,6 +126,8 @@ pub struct TravelRequestBody {
     pub source: String,
     #[serde(default)]
     pub actor: String,
+    /// Discord user ID of the requester, used for external node routing.
+    pub actor_discord_id: Option<String>,
 }
 
 fn default_source() -> String {
@@ -1058,6 +1060,7 @@ mod tests {
                 map: "fjordur".into(),
                 source: "test".into(),
                 actor: "tester".into(),
+                actor_discord_id: None,
             },
             statuses,
         )
@@ -1083,6 +1086,7 @@ mod tests {
                 map: travel_a.map_key.clone(),
                 source: "test".into(),
                 actor: "tester".into(),
+                actor_discord_id: None,
             },
             vec![
                 SlotStatusSnapshot {
