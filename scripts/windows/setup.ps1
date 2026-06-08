@@ -11,7 +11,7 @@ param(
     [string]$PairingCode,
     [string]$NodeName,
     [string]$NodeId,
-    [string]$ArkDir = "D:\ARK-Dedicated",
+    [string]$ArkDir = "",
     [string]$DataDir = "C:\ProgramData\ArkClusterNode",
     [string]$ClusterSharePath = "Z:\ark-cluster-main",
     [string]$UbuntuTailscaleIp = "100.68.7.42",
@@ -52,6 +52,28 @@ if (-not $NodeId) {
 }
 
 $ManagerUrl = $ManagerUrl.TrimEnd('/')
+
+# ── Auto-detect ArkDir ────────────────────────────────────────────────────────
+
+if (-not $ArkDir) {
+    $candidates = @(
+        "D:\ARK-Dedicated",
+        "C:\ARK-Dedicated",
+        "C:\Program Files (x86)\Steam\steamapps\common\ARK",
+        "D:\Steam\steamapps\common\ARK",
+        "E:\Steam\steamapps\common\ARK",
+        "D:\SteamLibrary\steamapps\common\ARK",
+        "E:\SteamLibrary\steamapps\common\ARK"
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path (Join-Path $c "ShooterGame\Binaries\Win64\ShooterGameServer.exe")) {
+            $ArkDir = $c
+            Write-Host "    Auto-detected ARK at: $ArkDir" -ForegroundColor Cyan
+            break
+        }
+    }
+    if (-not $ArkDir) { $ArkDir = "D:\ARK-Dedicated" }
+}
 
 # ── Step 1: Check Tailscale ───────────────────────────────────────────────────
 
@@ -100,15 +122,23 @@ if (-not (Test-Path $SteamCmd)) {
 
 # ── Step 4: Install/update ARK Dedicated Server ───────────────────────────────
 
-Write-Step "Installing ARK Dedicated Server (App 376030)"
-New-Item -ItemType Directory -Force $ArkDir | Out-Null
-Write-Host "    This may take 30-60 minutes on first install. Please wait..."
-& $SteamCmd "+force_install_dir" $ArkDir "+login" "anonymous" "+app_update" "376030" "validate" "+quit"
+Write-Step "Checking ARK Dedicated Server"
 $arkExe = Join-Path $ArkDir "ShooterGame\Binaries\Win64\ShooterGameServer.exe"
-if (-not (Test-Path $arkExe)) {
-    Write-Fail "ARK server install failed. ShooterGameServer.exe not found at: $arkExe"
+if (Test-Path $arkExe) {
+    Write-OK "ARK already installed at $ArkDir — skipping download"
+} else {
+    Write-Host "    ShooterGameServer.exe not found at $ArkDir"
+    Write-Host "    Downloading via SteamCMD (App 376030). This may take 30-60 min..." -ForegroundColor Yellow
+    New-Item -ItemType Directory -Force $ArkDir | Out-Null
+    & $SteamCmd "+force_install_dir" $ArkDir "+login" "anonymous" "+app_update" "376030" "validate" "+quit"
+    if (-not (Test-Path $arkExe)) {
+        Write-Host ""
+        Write-Host "    If ARK is already installed elsewhere, re-run with:" -ForegroundColor Yellow
+        Write-Host "    .\setup.ps1 -ArkDir 'C:\Program Files (x86)\Steam\steamapps\common\ARK'" -ForegroundColor Yellow
+        Write-Fail "ARK install failed. ShooterGameServer.exe not found at: $arkExe"
+    }
+    Write-OK "ARK Dedicated Server installed at $ArkDir"
 }
-Write-OK "ARK Dedicated Server installed at $ArkDir"
 
 # ── Step 5: Create working directories ───────────────────────────────────────
 
