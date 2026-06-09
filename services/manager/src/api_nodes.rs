@@ -224,10 +224,9 @@ async fn task_result(
         return api_err(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string());
     }
 
-    // On stop_travel/save_world task success → update session status
+    // On stop_travel/start_travel task success → update session status
     if req.success {
-        let tasks = node_tasks::list_for_session(&s.pool, &task_id).await;
-        if let Some(task) = tasks.first() {
+        if let Some(task) = node_tasks::get_by_id(&s.pool, &task_id).await {
             if let Some(sid) = &task.session_id {
                 if task.task_type == "stop_travel" {
                     let _ = travel_sessions::close_session(&s.pool, sid).await;

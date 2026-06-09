@@ -131,6 +131,14 @@ pub async fn complete_task(
     Ok(())
 }
 
+pub async fn get_by_id(pool: &SqlitePool, task_id: &str) -> Option<NodeTask> {
+    sqlx::query_as::<_, NodeTask>("SELECT * FROM node_tasks WHERE id = ?1")
+        .bind(task_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None)
+}
+
 pub async fn list_for_session(pool: &SqlitePool, session_id: &str) -> Vec<NodeTask> {
     sqlx::query_as::<_, NodeTask>(
         "SELECT * FROM node_tasks WHERE session_id = ?1 ORDER BY created_at DESC LIMIT 20",

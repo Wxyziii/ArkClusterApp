@@ -106,11 +106,19 @@ pub async fn start(
 }
 
 pub async fn stop(cfg: &NodeConfig, save_first: bool, state: SharedServerState) -> Result<()> {
-    let pid = {
+    let state_pid = {
         let s = state.read().await;
-        if !s.running { return Ok(()); }
         s.pid
     };
+    // Fall back to process scan — handles agent-restarted-while-server-running case
+    let effective_pid = match state_pid {
+        Some(p) => Some(p),
+        None => find_shooter_pid().await,
+    };
+
+    if effective_pid.is_none() {
+        return Ok(());
+    }
 
     if save_first {
         match rcon::save_world("127.0.0.1", cfg.rcon_port, &cfg.server_admin_password).await {
@@ -120,7 +128,7 @@ pub async fn stop(cfg: &NodeConfig, save_first: bool, state: SharedServerState) 
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 
-    if let Some(pid) = pid {
+    if let Some(pid) = effective_pid {
         kill_pid(pid).await;
     }
 
